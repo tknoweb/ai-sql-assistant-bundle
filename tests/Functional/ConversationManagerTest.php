@@ -69,6 +69,10 @@ class ConversationManagerTest extends FunctionalTestCase
         $this->assertSame(['Which stores are open?', false], [$exchanges[0]->getUserInput(), $exchanges[0]->isAnsweredQuestion()]);
         $this->assertSame(['Open ones', true], [$exchanges[1]->getUserInput(), $exchanges[1]->isAnsweredQuestion()]);
         $this->assertSame(TestKernel::MODEL_ID, $exchanges[1]->getModels());
+        foreach ($exchanges as $exchange) {
+            $this->assertIsInt($exchange->getDuration(), 'The duration of each turn is logged.');
+            $this->assertGreaterThanOrEqual(0, $exchange->getDuration());
+        }
 
         $loggedQuery = $exchanges[1]->getResponse()[0];
         $this->assertSame("SELECT name FROM store WHERE status = 'open' ORDER BY name", $loggedQuery['sql']);
@@ -113,6 +117,7 @@ class ConversationManagerTest extends FunctionalTestCase
         $this->assertSame('How many employees?', $exchange['userInput']);
         $this->assertSame(substr(hash('sha256', 'bob'), 0, 12), $exchange['ownerPseudonym']);
         $this->assertSame([TestKernel::MODEL_KEY, TestKernel::MODEL_ID], [$exchange['conversationModelKey'], $exchange['models']]);
+        $this->assertIsInt($exchange['durationMilliseconds']);
         $this->assertStringNotContainsString('bob', json_encode($export, JSON_THROW_ON_ERROR));
         $this->assertStringNotContainsString('Alpha store', json_encode($export, JSON_THROW_ON_ERROR));
 

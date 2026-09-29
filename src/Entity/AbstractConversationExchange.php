@@ -49,6 +49,10 @@ abstract class AbstractConversationExchange implements ConversationExchangeInter
     #[ORM\Column]
     protected float $cost = 0.0;
 
+    // Duration of the turn in milliseconds, from the user input to the last answer of the model, its queries included. Null for an exchange logged before it was measured.
+    #[ORM\Column(nullable: true)]
+    protected ?int $duration = null;
+
     public function __toString(): string
     {
         return $this->getConversation()->getTitle();
@@ -123,6 +127,18 @@ abstract class AbstractConversationExchange implements ConversationExchangeInter
     public function getCost(): float
     {
         return $this->cost;
+    }
+
+    public function getDuration(): ?int
+    {
+        return $this->duration;
+    }
+
+    public function setDuration(?int $duration): static
+    {
+        $this->duration = $duration;
+
+        return $this;
     }
 
     public function setUsage(array $usage): static

@@ -25,7 +25,7 @@ The `@vendor/...` line must be plain text, not inside a code block.
 - **Public referentials.** When the application provides some, the model can search them for the exact spelling of a name (`search_public_referential` tool). They are the only data it reads: only put there what you accept to send to the AI provider.
 - **Formats.** The model picks the first display format from the request; the user then switches between text, table, chart and Excel without any new call.
 - **Cost.** The cost of each conversation is computed from the usage returned by the API, and displayed. The system prompt is cached.
-- **History.** Each turn is logged without any value of the database (questions, SQL, costs), to be reviewed and to improve the documents of the prompt. A JSON export by period is provided by `ConversationManager::getExchangesExport()`.
+- **History.** Each turn is logged without any value of the database (questions, SQL, costs, duration), to be reviewed and to improve the documents of the prompt. A JSON export by period is provided by `ConversationManager::getExchangesExport()`.
 
 ## Requirements
 

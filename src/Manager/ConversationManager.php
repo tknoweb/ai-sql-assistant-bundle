@@ -72,12 +72,15 @@ class ConversationManager
     }
 
     /**
-     * Run a turn of the conversation from the user input, save the updated history and the cost of the turn along with the log of the turn, and return the events of the turn to display.
+     * Run a turn of the conversation from the user input, save the updated history and the cost of the turn along with the log of the turn, its duration included, and return the events of
+     * the turn to display.
      */
     public function continueConversation(ConversationInterface $conversation, string $userInput): array
     {
         $answeredQuestion = $this->assistantManager->isWaitingForAnswer($conversation->getHistory());
+        $startTime = hrtime(true);
         $turn = $this->assistantManager->continueConversation($conversation->getHistory(), $conversation->getModelKey(), $userInput);
+        $duration = intdiv(hrtime(true) - $startTime, 1000000);
 
         $conversation
             ->setHistory($turn['history'])
@@ -88,7 +91,8 @@ class ConversationManager
             ->setUserInput($userInput)
             ->setAnsweredQuestion($answeredQuestion)
             ->setResponse($this->getLoggedEvents($turn['events']))
-            ->setUsage($turn['usage']);
+            ->setUsage($turn['usage'])
+            ->setDuration($duration);
 
         $this->entityManager->persist($exchange);
         $this->entityManager->flush();
@@ -139,6 +143,7 @@ class ConversationManager
                 'cacheCreationInputTokens' => $exchange->getCacheCreationInputTokens(),
                 'cacheReadInputTokens' => $exchange->getCacheReadInputTokens(),
                 'cost' => $exchange->getCost(),
+                'durationMilliseconds' => $exchange->getDuration(),
             ], $exchanges),
         ];
     }

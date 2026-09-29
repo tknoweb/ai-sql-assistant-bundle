@@ -40,6 +40,13 @@ interface ConversationExchangeInterface
     public function getCost(): float;
 
     /**
+     * Duration of the turn in milliseconds, null for an exchange logged before it was measured.
+     */
+    public function getDuration(): ?int;
+
+    public function setDuration(?int $duration): static;
+
+    /**
      * Set the models, tokens and cost of the turn, as returned in the "usage" of AssistantManager::continueConversation().
      */
     public function setUsage(array $usage): static;
