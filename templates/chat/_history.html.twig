@@ -1,0 +1,27 @@
+{# Conversations of the current user, the most recently continued first, shared by the home page and the conversation page #}
+{% trans_default_domain 'TknowebAiSqlAssistant' %}
+<div class="card h-100">
+    <div class="card-header">
+        <h2 class="h5 mb-0">{{ 'conversations'|trans }}</h2>
+    </div>
+    <div class="card-body p-2">
+        <a class="btn btn-sm btn-outline-primary w-100 mb-2" href="{{ path(routePrefix ~ 'index') }}">{{ 'newConversation'|trans }}</a>
+
+        {% if conversations is empty %}
+            <p class="text-body-secondary small text-center my-3">{{ 'noConversation'|trans }}</p>
+        {% else %}
+            <div class="list-group list-group-flush">
+                {% for historyConversation in conversations %}
+                    {% set isCurrent = currentConversation is not null and currentConversation.id == historyConversation.id %}
+                    <a class="list-group-item list-group-item-action px-2 {{ isCurrent ? 'active' }}"
+                       href="{{ path(routePrefix ~ 'show', {'id': historyConversation.id}) }}"
+                       title="{{ historyConversation.title }}"
+                    >
+                        <div class="text-truncate fw-semibold">{{ historyConversation.title }}</div>
+                        <div class="small {{ isCurrent ? '' : 'text-body-secondary' }}">{{ 'costValue'|trans({'cost': historyConversation.cost|number_format(3, ',', ' ')}) }}</div>
+                    </a>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+</div>

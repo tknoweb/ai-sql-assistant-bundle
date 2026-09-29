@@ -1,0 +1,31 @@
+title: Assistant
+conversations: My conversations
+newConversation: New conversation
+noConversation: No conversation yet
+intro: "Ask your question as you would ask a colleague. The assistant turns it into a query on the database, asks you to clarify it when needed, then shows the result as a sentence, a table, a chart or an Excel file. Always read the sentence that comes with the result: it states exactly what was counted."
+privacy: "Your questions are sent to the AI provider, but the data of the database is never sent to it."
+question: Your question
+questionPlaceholder: "For instance: how many orders in 2025?"
+ask: Ask
+send: Send
+thinking: The assistant is thinking…
+messagePlaceholder: New request or clarification…
+answerPlaceholder: Pick an answer above or type your own…
+costValue: "{cost} $"
+conversationCost: "Cost: {cost} $"
+questionCounter: "Questions for this request: {count}/{max}"
+questionCounterHelp: "Beyond {max} questions for a single request, the assistant applies the default rules of the dictionary and states them in its answer."
+archive: Archive
+archiveConfirmation: "Archive this conversation? It will no longer show in your history."
+conversationArchived: The conversation was archived.
+error: "The assistant could not answer. Your message was not saved, try again in a few moments."
+refusal: "The assistant declined this request. Rephrase it, or contact the administrator if the problem persists."
+interrupted: "The assistant stopped before the end. Send your request again, more precisely if possible."
+showQuery: Show the SQL query
+queryFailed: This query could not run again.
+outputText: Text
+outputTable: Table
+outputChart: Chart
+outputExcel: Excel
+truncated: "Only the first {max} rows are shown: the Excel export holds them all."
+noResult: No result

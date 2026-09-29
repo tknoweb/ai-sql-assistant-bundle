@@ -1,0 +1,61 @@
+{
+  "name": "tknoweb/ai-sql-assistant-bundle",
+  "type": "symfony-bundle",
+  "description": "Statistics assistant for Symfony: an AI model (Claude, OpenAI, Gemini, a local model...) answers questions in natural language by writing SQL on a MySQL database, without ever seeing a stored value",
+  "keywords": ["symfony", "bundle", "ai", "llm", "claude", "openai", "gemini", "ollama", "sql", "statistics", "doctrine"],
+  "license": "MIT",
+  "homepage": "https://github.com/tknoweb/ai-sql-assistant-bundle",
+  "authors": [
+    {
+      "name": "T'knoweb - Benjamin Guizelin"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/tknoweb/ai-sql-assistant-bundle/issues",
+    "source": "https://github.com/tknoweb/ai-sql-assistant-bundle"
+  },
+  "require": {
+    "php": ">=8.2",
+    "anthropic-ai/sdk": "^0.51",
+    "doctrine/dbal": "^3.8|^4.0",
+    "doctrine/doctrine-bundle": "^2.12",
+    "doctrine/orm": "^3.2",
+    "phpoffice/phpspreadsheet": "^1.29|^2.0|^3.0",
+    "symfony/finder": "^7.1",
+    "symfony/form": "^7.1",
+    "symfony/framework-bundle": "^7.1",
+    "symfony/http-client": "^7.1",
+    "symfony/lock": "^7.1",
+    "symfony/security-bundle": "^7.1",
+    "symfony/string": "^7.1",
+    "symfony/translation": "^7.1",
+    "symfony/twig-bundle": "^7.1",
+    "symfony/ux-chartjs": "^2.20",
+    "symfony/validator": "^7.1",
+    "symfony/yaml": "^7.1"
+  },
+  "require-dev": {
+    "nyholm/psr7": "^1.8",
+    "phpunit/phpunit": "^9.6|^10.5|^11.0|^12.0",
+    "symfony/asset-mapper": "^7.1",
+    "symfony/browser-kit": "^7.1",
+    "symfony/css-selector": "^7.1"
+  },
+  "suggest": {
+    "symfony/asset-mapper": "Exposes the Stimulus controller and the stylesheet of the chat under @tknoweb/ai-sql-assistant-bundle",
+    "symfony/stimulus-bundle": "Runs the Stimulus controller of the chat",
+    "symfony/ux-turbo": "Loads each query result lazily in its own frame"
+  },
+  "autoload": {
+    "psr-4": { "Tknoweb\\AiSqlAssistantBundle\\": "src/" }
+  },
+  "autoload-dev": {
+    "psr-4": { "Tknoweb\\AiSqlAssistantBundle\\Tests\\": "tests/" }
+  },
+  "scripts": {
+    "test": "phpunit"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}

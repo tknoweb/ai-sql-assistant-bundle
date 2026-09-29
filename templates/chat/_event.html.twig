@@ -1,0 +1,57 @@
+{# One event of the conversation timeline built by AssistantManager::getTimeline() #}
+{% trans_default_domain 'TknowebAiSqlAssistant' %}
+{% if event.type == 'userMessage' %}
+    <div class="d-flex justify-content-end mb-3">
+        <div class="rounded-3 bg-primary-subtle px-3 py-2 ai-sql-assistant-bubble">{{ event.text|nl2br }}</div>
+    </div>
+{% elseif event.type == 'text' %}
+    <div class="d-flex mb-3">
+        <div class="rounded-3 bg-body-tertiary px-3 py-2 ai-sql-assistant-bubble">{{ event.text|nl2br }}</div>
+    </div>
+{% elseif event.type == 'question' %}
+    <div class="d-flex mb-3">
+        <div class="rounded-3 bg-body-tertiary px-3 py-2 ai-sql-assistant-bubble">
+            <div class="fw-semibold">{{ event.question }}</div>
+            {# Only the question still waiting for its answer offers its options, each one sent as the answer #}
+            {% if isPendingQuestion %}
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                    {% for option in event.options %}
+                        <button class="btn btn-sm {{ loop.first ? 'btn-primary' : 'btn-outline-primary' }}"
+                                type="button"
+                                {{ stimulus_action('ai-sql-assistant', 'answer', 'click', {'option': option}) }}
+                        >
+                            {{ option }}
+                        </button>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+    </div>
+{% elseif event.type == 'query' and event.error is null %}
+    {# A failed query is left out: the assistant corrected it or explained the problem in its own message #}
+    <div class="card mb-3">
+        <div class="card-body">
+            <h3 class="h6 mb-1">{{ event.title }}</h3>
+            <p class="text-body-secondary mb-3">{{ event.interpretation }}</p>
+
+            {# The result is never stored: its own frame runs the query again, lazily, so that the page does not wait for every query of the conversation #}
+            <turbo-frame id="ai-sql-assistant-query-{{ event.toolUseId }}"
+                         src="{{ path(routePrefix ~ 'query', {'id': conversation.id, 'toolUseId': event.toolUseId}) }}"
+                         loading="lazy"
+            >
+                <div class="text-center text-body-secondary py-4">
+                    <div class="spinner-border" role="status"></div>
+                </div>
+            </turbo-frame>
+
+            <details class="mt-3 small">
+                <summary class="text-body-secondary">{{ 'showQuery'|trans }}</summary>
+                <pre class="mb-0 mt-2 ai-sql-assistant-sql">{{ event.sql }}</pre>
+            </details>
+        </div>
+    </div>
+{% elseif event.type == 'refusal' %}
+    <div class="alert alert-warning">{{ 'refusal'|trans }}</div>
+{% elseif event.type == 'interrupted' %}
+    <div class="alert alert-warning">{{ 'interrupted'|trans }}</div>
+{% endif %}

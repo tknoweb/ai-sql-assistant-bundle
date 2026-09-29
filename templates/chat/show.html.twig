@@ -1,0 +1,56 @@
+{% extends baseTemplate %}
+{% trans_default_domain 'TknowebAiSqlAssistant' %}
+
+{% block body %}
+    <div class="container-fluid py-3" {{ stimulus_controller('ai-sql-assistant') }}>
+        <div class="d-flex align-items-center gap-2 mb-3">
+            <h1 class="h4 mb-0 me-auto text-truncate" title="{{ conversation.title }}">{{ conversation.title }}</h1>
+            <span class="badge text-bg-info py-2">{{ 'conversationCost'|trans({'cost': conversation.cost|number_format(3, ',', ' ')}) }}</span>
+
+            {# Only archived: the conversation disappears for its user but stays in the database, as its log does #}
+            <form method="post" action="{{ path(routePrefix ~ 'archive', {'id': conversation.id}) }}" data-turbo-confirm="{{ 'archiveConfirmation'|trans }}">
+                <input type="hidden" name="_token" value="{{ csrf_token(csrfTokenId) }}">
+                <button class="btn btn-sm btn-danger" type="submit">{{ 'archive'|trans }}</button>
+            </form>
+        </div>
+
+        {{ include('@TknowebAiSqlAssistant/chat/_flashes.html.twig') }}
+
+        <div class="row g-4">
+            <div class="col-12 col-lg-3">
+                {{ include('@TknowebAiSqlAssistant/chat/_history.html.twig', {'currentConversation': conversation}) }}
+            </div>
+
+            <div class="col-12 col-lg-9">
+                <div class="card">
+                    <div class="card-body">
+                        {% for event in timeline %}
+                            {{ include('@TknowebAiSqlAssistant/chat/_event.html.twig', {'event': event, 'isPendingQuestion': waitingForAnswer and loop.last}) }}
+                        {% endfor %}
+                        <div {{ stimulus_target('ai-sql-assistant', 'end') }}></div>
+                    </div>
+
+                    <div class="card-footer">
+                        <div class="small text-body-secondary mb-2" title="{{ 'questionCounterHelp'|trans({'max': maxQuestionCount}) }}">
+                            {{ 'questionCounter'|trans({'count': questionCount, 'max': maxQuestionCount}) }}
+                        </div>
+
+                        {{ form_start(form) }}
+                            {{ form_widget(form.message, {'attr': {
+                                'placeholder': waitingForAnswer ? 'answerPlaceholder' : 'messagePlaceholder',
+                                'data-ai-sql-assistant-target': 'message',
+                            }}) }}
+                            {{ form_errors(form.message) }}
+                            {# Turbo disables the button and swaps its label while the turn runs, which can take a while #}
+                            {{ form_widget(form.send, {'attr': {
+                                'class': 'btn btn-primary mt-2',
+                                'data-turbo-submits-with': 'thinking'|trans,
+                                'data-ai-sql-assistant-target': 'submit',
+                            }}) }}
+                        {{ form_end(form) }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

@@ -1,0 +1,31 @@
+# Test environment of the bundle, independent of any application: "php" runs Composer and PHPUnit, "mysql" is the throwaway database of the functional tests on MySQL,
+# kept in memory and emptied at each start. No port is published, so that it never conflicts with the services of another project. See "Tests" in README.md.
+name: ai-sql-assistant-bundle
+
+services:
+  php:
+    build: docker/php
+    volumes:
+      - .:/app
+      # The dependencies stay in a volume of Docker, far faster than a folder shared with the host
+      - vendor:/app/vendor
+      - composer-cache:/tmp/composer-cache
+    environment:
+      COMPOSER_CACHE_DIR: /tmp/composer-cache
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: assistant_test
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-ptest']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  vendor:
+  composer-cache:

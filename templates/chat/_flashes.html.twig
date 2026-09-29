@@ -1,0 +1,6 @@
+{# Flash messages of the chat: the error of a turn, the archiving of a conversation #}
+{% for type, messages in app.flashes(['success', 'danger']) %}
+    {% for message in messages %}
+        <div class="alert alert-{{ type }}">{{ message }}</div>
+    {% endfor %}
+{% endfor %}

@@ -1,0 +1,36 @@
+{% extends baseTemplate %}
+{% trans_default_domain 'TknowebAiSqlAssistant' %}
+
+{% block body %}
+    <div class="container-fluid py-3">
+        <h1 class="h4 mb-3">{{ 'title'|trans }}</h1>
+
+        {{ include('@TknowebAiSqlAssistant/chat/_flashes.html.twig') }}
+
+        <div class="row g-4">
+            <div class="col-12 col-lg-3">
+                {{ include('@TknowebAiSqlAssistant/chat/_history.html.twig', {'currentConversation': null}) }}
+            </div>
+
+            <div class="col-12 col-lg-9">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="h5 mb-0" title="{{ 'intro'|trans }}">{{ 'newConversation'|trans }}</h2>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-body-secondary">{{ 'intro'|trans }}</p>
+
+                        {{ form_start(form) }}
+                            {{ form_row(form.question) }}
+                            <div class="d-flex flex-wrap align-items-center gap-3">
+                                {# Turbo disables the button and swaps its label while the first turn runs, which can take a while #}
+                                {{ form_widget(form.ask, {'attr': {'class': 'btn btn-primary', 'data-turbo-submits-with': 'thinking'|trans}}) }}
+                                <span class="text-body-secondary small ms-auto text-end">{{ 'privacy'|trans }}</span>
+                            </div>
+                        {{ form_end(form) }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

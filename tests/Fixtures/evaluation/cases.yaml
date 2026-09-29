@@ -1,0 +1,15 @@
+# Test cases of the evaluation command in the test application, answered by the scripted model provider
+- id: store-count
+  tags: [precise]
+  question: "How many open stores?"
+  expectQuestion: false
+  expectQuery: true
+  sqlMustContain: ['FROM store', 'COUNT\(']
+  expectedOutput: text
+
+- id: employee-count
+  tags: [ambiguous]
+  question: "How many employees?"
+  expectQuestion: true
+  expectQuery: true
+  answers: ['Every employee']

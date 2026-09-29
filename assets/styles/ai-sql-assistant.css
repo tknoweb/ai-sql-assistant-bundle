@@ -1,0 +1,14 @@
+/* Styles of the chat of tknoweb/ai-sql-assistant-bundle, written flat: there is no build step */
+.ai-sql-assistant-bubble {
+  max-width: 80%;
+  overflow-wrap: anywhere;
+}
+
+.ai-sql-assistant-result-table {
+  max-height: 25rem;
+  overflow: auto;
+}
+
+.ai-sql-assistant-sql {
+  white-space: pre-wrap;
+}

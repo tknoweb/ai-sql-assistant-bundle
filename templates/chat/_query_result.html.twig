@@ -1,0 +1,80 @@
+{% trans_default_domain 'TknowebAiSqlAssistant' %}
+<turbo-frame id="ai-sql-assistant-query-{{ query.toolUseId }}">
+    {% if query.error is not null %}
+        <div class="alert alert-warning mb-0">{{ 'queryFailed'|trans }}</div>
+    {% else %}
+        {# Every format the result allows, the one the assistant picked from the request first: switching between them never calls the assistant again #}
+        {% set tabPrefix = 'ai-sql-assistant-' ~ query.toolUseId %}
+        {% set activeOutput = query.output == 'excel' ? 'table' : query.output %}
+
+        <ul class="nav nav-tabs mb-3" role="tablist">
+            {% if query.answer is not null %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link {{ activeOutput == 'text' ? 'active' }}" data-bs-toggle="tab" data-bs-target="#{{ tabPrefix }}-text" type="button" role="tab">{{ 'outputText'|trans }}</button>
+                </li>
+            {% endif %}
+            <li class="nav-item" role="presentation">
+                <button class="nav-link {{ activeOutput == 'table' ? 'active' }}" data-bs-toggle="tab" data-bs-target="#{{ tabPrefix }}-table" type="button" role="tab">{{ 'outputTable'|trans }}</button>
+            </li>
+            {% if chart is not null %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link {{ activeOutput == 'chart' ? 'active' }}" data-bs-toggle="tab" data-bs-target="#{{ tabPrefix }}-chart" type="button" role="tab">{{ 'outputChart'|trans }}</button>
+                </li>
+            {% endif %}
+            {# Turbo is disabled on the link: the response is a file to download, it must not be rendered inside the frame #}
+            <li class="nav-item ms-auto">
+                <a class="btn btn-sm {{ query.output == 'excel' ? 'btn-success' : 'btn-outline-secondary' }}"
+                   href="{{ path(routePrefix ~ 'excel', {'id': conversation.id, 'toolUseId': query.toolUseId}) }}"
+                   data-turbo="false"
+                   download
+                >
+                    {{ 'outputExcel'|trans }}
+                </a>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            {% if query.answer is not null %}
+                <div class="tab-pane fade {{ activeOutput == 'text' ? 'show active' }}" id="{{ tabPrefix }}-text" role="tabpanel">
+                    <p class="fs-5 fw-bold mb-0">{{ query.answer }}</p>
+                </div>
+            {% endif %}
+
+            <div class="tab-pane fade {{ activeOutput == 'table' ? 'show active' }}" id="{{ tabPrefix }}-table" role="tabpanel">
+                {% if rows is empty %}
+                    <p class="text-body-secondary mb-0">{{ 'noResult'|trans }}</p>
+                {% else %}
+                    <div class="table-responsive ai-sql-assistant-result-table">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    {% for columnLabel in columnLabels %}
+                                        <th class="text-nowrap">{{ columnLabel }}</th>
+                                    {% endfor %}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in rows %}
+                                    <tr>
+                                        {% for column in columns %}
+                                            <td>{{ row[column] }}</td>
+                                        {% endfor %}
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% if query.result.truncated %}
+                        <p class="text-body-secondary small mt-2 mb-0">{{ 'truncated'|trans({'max': maxDisplayedRows}) }}</p>
+                    {% endif %}
+                {% endif %}
+            </div>
+
+            {% if chart is not null %}
+                <div class="tab-pane fade {{ activeOutput == 'chart' ? 'show active' }}" id="{{ tabPrefix }}-chart" role="tabpanel">
+                    {{ render_chart(chart) }}
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+</turbo-frame>
