@@ -103,6 +103,27 @@ class ConversationManagerTest extends FunctionalTestCase
         $this->assertNotNull($this->getEntityManager()->find(Conversation::class, $id), 'An archived conversation stays in the database.');
     }
 
+    public function testRenamesAConversationButNeverWithABlankTitle(): void
+    {
+        $id = $this->createConversation('alice', 'How many stores?')->getId();
+
+        $this->conversationManager->renameConversation($this->getEntityManager()->find(Conversation::class, $id), "  Stores\n");
+        $this->getEntityManager()->clear();
+        $conversation = $this->getEntityManager()->find(Conversation::class, $id);
+        $this->assertSame('Stores', $conversation->getTitle());
+
+        $this->conversationManager->renameConversation($conversation, str_repeat('é', 300));
+        $this->assertSame(255, mb_strlen($conversation->getTitle()));
+        $this->assertStringEndsWith('…', $conversation->getTitle());
+
+        try {
+            $this->conversationManager->renameConversation($conversation, " \n ");
+            $this->fail('A blank title must be refused.');
+        } catch (\InvalidArgumentException) {
+            $this->assertStringEndsWith('…', $conversation->getTitle(), 'A refused title leaves the previous one.');
+        }
+    }
+
     public function testExportsTheExchangesOfAPeriodUnderAPseudonym(): void
     {
         $this->createConversation('alice', 'How many stores?');

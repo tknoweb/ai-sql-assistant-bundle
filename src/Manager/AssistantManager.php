@@ -54,6 +54,8 @@ class AssistantManager
     // Safety net against a model looping on its tools: beyond it, the turn stops and the user is told so. A turn may take a few table descriptions and field searches before its query.
     private const MAX_MODEL_CALLS_PER_TURN = 12;
     private const MAX_DESCRIBED_TABLES = 10;
+    // Names searched in a public referential by a single call, so that a list of names (the countries of a continent...) takes one call rather than one each
+    private const MAX_REFERENTIAL_SEARCHES = 20;
 
     private const QUERY_SUCCESS_RESULT = 'The query ran successfully. Its result is displayed to the user, you cannot see it.';
     private const INTERRUPTED_TOOL_RESULT = 'This tool call was not run, the turn was interrupted before it.';
@@ -528,15 +530,28 @@ class AssistantManager
         };
     }
 
+    /**
+     * Search each name of the call on its own, a refused one only reporting its error: the call only fails when every search does.
+     */
     private function searchPublicReferential(ReferentialProviderInterface $referentialProvider, string $toolUseId, array $input): array
     {
-        try {
-            $result = $referentialProvider->search((string) ($input['referential'] ?? ''), (string) ($input['text'] ?? ''));
-        } catch (\InvalidArgumentException $exception) {
-            return [$this->getToolResult($toolUseId, $exception->getMessage(), true), null];
+        $texts = array_values(array_unique(array_map('strval', (array) ($input['texts'] ?? []))));
+        if ([] === $texts || count($texts) > self::MAX_REFERENTIAL_SEARCHES) {
+            return [$this->getToolResult($toolUseId, sprintf('Give between 1 and %d names to search.', self::MAX_REFERENTIAL_SEARCHES), true), null];
         }
 
-        return [$this->getToolResult($toolUseId, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)), null];
+        $searches = [];
+        $failureCount = 0;
+        foreach ($texts as $text) {
+            try {
+                $searches[] = ['text' => $text, 'found' => $referentialProvider->search((string) ($input['referential'] ?? ''), $text)];
+            } catch (\InvalidArgumentException $exception) {
+                $searches[] = ['text' => $text, 'error' => $exception->getMessage()];
+                ++$failureCount;
+            }
+        }
+
+        return [$this->getToolResult($toolUseId, json_encode($searches, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), count($texts) === $failureCount), null];
     }
 
     private function describeTables(string $toolUseId, array $input): array
@@ -662,15 +677,19 @@ class AssistantManager
             ],
             ...(null !== $this->referentialProvider ? [[
                 'name' => self::TOOL_SEARCH_PUBLIC_REFERENTIAL,
-                'description' => trim('Search a public referential by name, to use the exact spelling of the database, or the id of a row, before filtering a query on it. '.$this->referentialProvider->getDescription()),
+                'description' => trim(sprintf(
+                    'Search a public referential by name, to use the exact spelling of the database, or the id of a row, before filtering a query on it. Search every name you need at once, up to %d (all the countries of a list, for instance), rather than one call per name. %s',
+                    self::MAX_REFERENTIAL_SEARCHES,
+                    $this->referentialProvider->getDescription()
+                )),
                 'strict' => true,
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
                         'referential' => ['type' => 'string', 'enum' => array_values($this->referentialProvider->getReferentials())],
-                        'text' => ['type' => 'string', 'description' => 'Part of the name to search.'],
+                        'texts' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => sprintf('Parts of the names to search, one per name, %d at most.', self::MAX_REFERENTIAL_SEARCHES)],
                     ],
-                    'required' => ['referential', 'text'],
+                    'required' => ['referential', 'texts'],
                     'additionalProperties' => false,
                 ],
             ]] : []),

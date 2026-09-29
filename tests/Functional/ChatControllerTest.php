@@ -229,6 +229,62 @@ class ChatControllerTest extends FunctionalTestCase
         $this->assertTrue($this->getEntityManager()->find(Conversation::class, $id)->isArchived());
     }
 
+    public function testArchivesFromTheHistoryWithoutLeavingTheConversationBeingRead(): void
+    {
+        $first = $this->createConversation('alice', 'First question', [ScriptedModelProvider::text('Answer')]);
+        $second = $this->createConversation('alice', 'Second question', [ScriptedModelProvider::text('Answer')]);
+        $this->client->loginUser($this->getUser('alice'));
+
+        $crawler = $this->client->request('GET', '/assistant/'.$second->getId());
+        $this->client->submit($crawler->filter(sprintf('.list-group form[action="/assistant/%d/archive"]', $first->getId()))->form());
+        $this->assertResponseRedirects('/assistant/'.$second->getId());
+        $crawler = $this->client->followRedirect();
+        $this->assertSelectorTextContains('.alert-success', 'The conversation was archived.');
+        $this->assertSelectorTextNotContains('.list-group', 'First question');
+
+        // The conversation being read is archived as well, which leaves the home page only
+        $this->client->submit($crawler->filter(sprintf('.list-group form[action="/assistant/%d/archive"]', $second->getId()))->form());
+        $this->assertResponseRedirects('/assistant/');
+    }
+
+    public function testRenamesAConversationFromTheHistory(): void
+    {
+        $first = $this->createConversation('alice', 'First question', [ScriptedModelProvider::text('Answer')]);
+        $second = $this->createConversation('alice', 'Second question', [ScriptedModelProvider::text('Answer')]);
+        $conversationOfBob = $this->createConversation('bob', 'Question of Bob', [ScriptedModelProvider::text('Answer')]);
+        $this->client->loginUser($this->getUser('alice'));
+
+        $this->client->request('GET', sprintf('/assistant/%d/rename', $first->getId()));
+        $this->assertResponseStatusCodeSame(405);
+        $this->client->request('POST', sprintf('/assistant/%d/rename', $first->getId()), ['_token' => 'forged', 'title' => 'Forged']);
+        $this->assertResponseStatusCodeSame(403);
+        $this->client->request('POST', sprintf('/assistant/%d/rename', $conversationOfBob->getId()), ['title' => 'Stolen']);
+        $this->assertResponseStatusCodeSame(404);
+
+        // Renamed while reading the second conversation, which stays on screen
+        $crawler = $this->client->request('GET', '/assistant/'.$second->getId());
+        $renameForm = $crawler->filter(sprintf('form[action="/assistant/%d/rename"]', $first->getId()))->form();
+        $this->assertSame('First question', $renameForm['title']->getValue());
+        $this->client->submit($renameForm, ['title' => ' ']);
+        $this->assertResponseStatusCodeSame(400);
+        $this->client->submit($renameForm, ['title' => '  Stores by status ']);
+        $this->assertResponseRedirects('/assistant/'.$second->getId());
+        $crawler = $this->client->followRedirect();
+        $this->assertSelectorTextContains('h1', 'Second question');
+        $this->assertSelectorTextContains('.list-group', 'Stores by status');
+        $this->assertSelectorTextNotContains('.list-group', 'First question');
+
+        // The conversation being read, renamed, shows its new title at once
+        $this->client->submit($crawler->filter(sprintf('form[action="/assistant/%d/rename"]', $second->getId()))->form(['title' => 'Open stores']));
+        $this->assertResponseRedirects('/assistant/'.$second->getId());
+        $this->client->followRedirect();
+        $this->assertSelectorTextContains('h1', 'Open stores');
+
+        $this->getEntityManager()->clear();
+        $this->assertSame('Stores by status', $this->getEntityManager()->find(Conversation::class, $first->getId())->getTitle());
+        $this->assertSame('Question of Bob', $this->getEntityManager()->find(Conversation::class, $conversationOfBob->getId())->getTitle());
+    }
+
     /**
      * A conversation of $owner of one turn, the model answering with $answers.
      */

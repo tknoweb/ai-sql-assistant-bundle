@@ -8,6 +8,7 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Form\FormInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Contracts\Translation\TranslatorInterface;
@@ -20,7 +21,7 @@ use Tknoweb\AiSqlAssistantBundle\Manager\ResultManager;
 use Tknoweb\AiSqlAssistantBundle\Provider\ModelProviderException;
 
 /**
- * Chat of the assistant: each user only ever reaches their own conversations, which they can archive (the log keeps them). Its routes are imported by the application, which sets their path
+ * Chat of the assistant: each user only ever reaches their own conversations, which they can rename and archive (the log keeps them). Its routes are imported by the application, which sets their path
  * prefix and their name prefix, the latter also set in the "route_name_prefix" configuration so that the controller and the templates can build them.
  */
 class ChatController extends AbstractController
@@ -139,18 +140,33 @@ class ChatController extends AbstractController
         return $this->resultManager->createSpreadsheetResponse($query['result']['columns'], $this->resultManager->getLabelledRows($query['result']), $query['title']);
     }
 
+    #[Route('/{id}/rename', name: 'rename', requirements: ['id' => '\d+'], methods: ['POST'])]
+    public function rename(Request $request, int $id): Response
+    {
+        $user = $this->getAllowedUser();
+        $conversation = $this->getOwnConversation($user, $id);
+        $this->checkCsrfToken($request);
+
+        try {
+            $this->conversationManager->renameConversation($conversation, $request->request->getString('title'));
+        } catch (\InvalidArgumentException $exception) {
+            throw new BadRequestHttpException($exception->getMessage(), $exception);
+        }
+
+        return $this->redirectToCurrentPage($request, $user);
+    }
+
     #[Route('/{id}/archive', name: 'archive', requirements: ['id' => '\d+'], methods: ['POST'])]
     public function archive(Request $request, int $id): Response
     {
-        $conversation = $this->getOwnConversation($this->getAllowedUser(), $id);
-        if (!$this->isCsrfTokenValid($this->csrfTokenId, (string) $request->request->get('_token'))) {
-            throw $this->createAccessDeniedException('Invalid CSRF token.');
-        }
+        $user = $this->getAllowedUser();
+        $conversation = $this->getOwnConversation($user, $id);
+        $this->checkCsrfToken($request);
 
         $this->conversationManager->archiveConversation($conversation);
         $this->addFlash('success', $this->translator->trans('conversationArchived', domain: self::TRANSLATION_DOMAIN));
 
-        return $this->redirectToRoute($this->routeNamePrefix.'index');
+        return $this->redirectToCurrentPage($request, $user);
     }
 
     /**
@@ -180,6 +196,26 @@ class ChatController extends AbstractController
         return $this->conversationManager->getOwnConversation($user, $id) ?? throw $this->createNotFoundException(sprintf('No conversation %d for the current user.', $id));
     }
 
+    private function checkCsrfToken(Request $request): void
+    {
+        if (!$this->isCsrfTokenValid($this->csrfTokenId, $request->request->getString('_token'))) {
+            throw $this->createAccessDeniedException('Invalid CSRF token.');
+        }
+    }
+
+    /**
+     * Page the user renamed or archived a conversation from: the conversation they were reading, posted as "currentId" by the history, unless that is the one they archived, else the home page.
+     */
+    private function redirectToCurrentPage(Request $request, UserInterface $user): Response
+    {
+        $currentId = $request->request->getInt('currentId');
+        if (0 !== $currentId && null !== $this->conversationManager->getOwnConversation($user, $currentId)) {
+            return $this->redirectToRoute($this->routeNamePrefix.'show', ['id' => $currentId]);
+        }
+
+        return $this->redirectToRoute($this->routeNamePrefix.'index');
+    }
+
     private function getStoredQuery(ConversationInterface $conversation, string $toolUseId, int $maxRows): array
     {
         try {
@@ -200,7 +236,7 @@ class ChatController extends AbstractController
     }
 
     /**
-     * Render a template of the bundle with the variables all of them share: the layout they extend, the name prefix of the routes and the CSRF token id of the archiving.
+     * Render a template of the bundle with the variables all of them share: the layout they extend, the name prefix of the routes and the CSRF token id of the renaming and the archiving.
      */
     private function renderPage(string $template, array $parameters, ?Response $response = null): Response
     {

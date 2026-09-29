@@ -113,7 +113,7 @@ class AssistantManagerTest extends AssistantManagerTestCase
     public function testOffersNoReferentialToolWithoutAReferentialProvider(): void
     {
         $this->provider->queue(
-            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'city', 'text' => 'Ly']),
+            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'city', 'texts' => ['Ly']]),
             ScriptedModelProvider::text('Sorry'),
         );
 
@@ -123,18 +123,32 @@ class AssistantManagerTest extends AssistantManagerTestCase
         $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_1', 'content' => 'No public referential is available.', 'isError' => true]], $turn['history'][2]['content']);
     }
 
-    public function testSearchesAPublicReferential(): void
+    public function testSearchesSeveralNamesOfAPublicReferentialInASingleCall(): void
     {
         $this->provider->queue(
-            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'city', 'text' => 'l']),
-            ScriptedModelProvider::toolCall('toolu_2', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'country', 'text' => 'France']),
+            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'city', 'texts' => ['l', 'Par', 'l']]),
+            // A refused name only reports its error, the call only failing when every search does
+            ScriptedModelProvider::toolCall('toolu_2', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'city', 'texts' => ['Ly', ' ']]),
+            ScriptedModelProvider::toolCall('toolu_3', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'country', 'texts' => ['France']]),
+            ScriptedModelProvider::toolCall('toolu_4', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'city', 'texts' => array_map(fn (int $index) => 'City '.$index, range(1, 21))]),
             ScriptedModelProvider::text('Found'),
         );
 
-        $turn = $this->createAssistantManager(new PublicReferentialProvider())->continueConversation([], self::MODEL_KEY, 'Stores of Lyon');
+        $turn = $this->createAssistantManager(new PublicReferentialProvider())->continueConversation([], self::MODEL_KEY, 'Stores of Lyon and Paris');
 
-        $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_1', 'content' => '["Lyon","Lille"]']], $turn['history'][2]['content']);
-        $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_2', 'content' => 'Unknown referential or empty text.', 'isError' => true]], $turn['history'][4]['content']);
+        $this->assertSame(
+            [['type' => 'tool_result', 'toolUseID' => 'toolu_1', 'content' => '[{"text":"l","found":["Lyon","Lille"]},{"text":"Par","found":["Paris"]}]']],
+            $turn['history'][2]['content']
+        );
+        $this->assertSame(
+            [['type' => 'tool_result', 'toolUseID' => 'toolu_2', 'content' => '[{"text":"Ly","found":["Lyon"]},{"text":" ","error":"Unknown referential or empty text."}]']],
+            $turn['history'][4]['content']
+        );
+        $this->assertSame(
+            [['type' => 'tool_result', 'toolUseID' => 'toolu_3', 'content' => '[{"text":"France","error":"Unknown referential or empty text."}]', 'isError' => true]],
+            $turn['history'][6]['content']
+        );
+        $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_4', 'content' => 'Give between 1 and 20 names to search.', 'isError' => true]], $turn['history'][8]['content']);
         $this->assertSame([AssistantManager::EVENT_TEXT], $this->getEventTypes($turn['events']));
     }
 

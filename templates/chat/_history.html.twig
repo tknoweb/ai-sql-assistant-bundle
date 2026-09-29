@@ -1,5 +1,7 @@
-{# Conversations of the current user, the most recently continued first, shared by the home page and the conversation page #}
+{# Conversations of the current user, the most recently continued first, shared by the home page and the conversation page. Each one is renamed in place ("ai-sql-assistant-history" controller)
+   and archived from here, both forms posting the conversation being read ("currentId") so that the user stays on it #}
 {% trans_default_domain 'TknowebAiSqlAssistant' %}
+{% set currentId = currentConversation is not null ? currentConversation.id : '' %}
 <div class="card h-100">
     <div class="card-header">
         <h2 class="h5 mb-0">{{ 'conversations'|trans }}</h2>
@@ -13,13 +15,47 @@
             <div class="list-group list-group-flush">
                 {% for historyConversation in conversations %}
                     {% set isCurrent = currentConversation is not null and currentConversation.id == historyConversation.id %}
-                    <a class="list-group-item list-group-item-action px-2 {{ isCurrent ? 'active' }}"
-                       href="{{ path(routePrefix ~ 'show', {'id': historyConversation.id}) }}"
-                       title="{{ historyConversation.title }}"
-                    >
-                        <div class="text-truncate fw-semibold">{{ historyConversation.title }}</div>
-                        <div class="small {{ isCurrent ? '' : 'text-body-secondary' }}">{{ 'costValue'|trans({'cost': historyConversation.cost|number_format(3, ',', ' ')}) }}</div>
-                    </a>
+                    <div class="list-group-item list-group-item-action px-2 {{ isCurrent ? 'active' }}" {{ stimulus_controller('ai-sql-assistant-history') }}>
+                        {# The elements shown and hidden in turn carry no display class, which would win over their "hidden" attribute #}
+                        <div {{ stimulus_target('ai-sql-assistant-history', 'display') }}>
+                            {# Stretched over the whole item, its buttons excepted #}
+                            <a class="d-block text-truncate fw-semibold text-reset text-decoration-none stretched-link"
+                               href="{{ path(routePrefix ~ 'show', {'id': historyConversation.id}) }}"
+                               title="{{ historyConversation.title }}"
+                            >{{ historyConversation.title }}</a>
+                            <div class="d-flex align-items-center gap-2 small">
+                                <span class="me-auto {{ isCurrent ? '' : 'text-body-secondary' }}">{{ 'costValue'|trans({'cost': historyConversation.cost|number_format(3, ',', ' ')}) }}</span>
+                                <button class="btn btn-link btn-sm p-0 position-relative z-2 {{ isCurrent ? 'text-reset' }}" type="button" {{ stimulus_action('ai-sql-assistant-history', 'edit') }}>
+                                    {{- 'rename'|trans -}}
+                                </button>
+                                {# Only archived: the conversation disappears for its user but stays in the database, as its log does #}
+                                <form class="position-relative z-2" method="post" action="{{ path(routePrefix ~ 'archive', {'id': historyConversation.id}) }}" data-turbo-confirm="{{ 'archiveConfirmation'|trans }}">
+                                    <input type="hidden" name="_token" value="{{ csrf_token(csrfTokenId) }}">
+                                    <input type="hidden" name="currentId" value="{{ currentId }}">
+                                    <button class="btn btn-link btn-sm p-0 {{ isCurrent ? 'text-reset' : 'link-danger' }}" type="submit">{{ 'archive'|trans }}</button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <form method="post"
+                              action="{{ path(routePrefix ~ 'rename', {'id': historyConversation.id}) }}"
+                              hidden
+                              {{ stimulus_target('ai-sql-assistant-history', 'form') }}
+                              {{ stimulus_action('ai-sql-assistant-history', 'submit', 'submit') }}
+                        >
+                            <input type="hidden" name="_token" value="{{ csrf_token(csrfTokenId) }}">
+                            <input type="hidden" name="currentId" value="{{ currentId }}">
+                            <input class="form-control form-control-sm"
+                                   type="text"
+                                   name="title"
+                                   value="{{ historyConversation.title }}"
+                                   maxlength="{{ constant('Tknoweb\\AiSqlAssistantBundle\\Entity\\AbstractConversation::TITLE_MAX_LENGTH') }}"
+                                   aria-label="{{ 'conversationTitle'|trans }}"
+                                   {{ stimulus_target('ai-sql-assistant-history', 'title') }}
+                                   {{ stimulus_action('ai-sql-assistant-history', 'cancel', 'keydown.esc')|stimulus_action('ai-sql-assistant-history', 'save', 'blur') }}
+                            >
+                        </form>
+                    </div>
                 {% endfor %}
             </div>
         {% endif %}

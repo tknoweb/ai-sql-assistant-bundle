@@ -22,7 +22,7 @@ The `@vendor/...` line must be plain text, not inside a code block.
 
 - **Conversation.** The model asks its clarification questions (`ask_user` tool), 10 at most per request, then runs its query (`run_query` tool) with an interpretation sentence stating exactly what is counted. The user checks that sentence, not the SQL.
 - **Sources.** First the curated views the application describes, then every table of the database (the model reads their columns on demand, `describe_tables` tool), then the content of the JSON columns, flattened every night into a dedicated table (`search_document_fields` tool to find their paths).
-- **Public referentials.** When the application provides some, the model can search them for the exact spelling of a name (`search_public_referential` tool). They are the only data it reads: only put there what you accept to send to the AI provider.
+- **Public referentials.** When the application provides some, the model can search them for the exact spelling of a name (`search_public_referential` tool, up to 20 names in a single call, each one going through `ReferentialProviderInterface::search()`). They are the only data it reads: only put there what you accept to send to the AI provider.
 - **Formats.** The model picks the first display format from the request; the user then switches between text, table, chart and Excel without any new call.
 - **Cost.** The cost of each conversation is computed from the usage returned by the API, and displayed. The system prompt is cached.
 - **History.** Each turn is logged without any value of the database (questions, SQL, costs, duration), to be reviewed and to improve the documents of the prompt. A JSON export by period is provided by `ConversationManager::getExchangesExport()`.
@@ -153,7 +153,7 @@ tknoweb_ai_sql_assistant:
     default_model: economical                  # model of every new conversation
     access_attribute: ROLE_USER                # security attribute granting access to the chat
     route_name_prefix: assistant_              # the "name_prefix" of the route import
-    csrf_token_id: tknoweb_ai_sql_assistant    # CSRF token of the archiving
+    csrf_token_id: tknoweb_ai_sql_assistant    # CSRF token of the renaming and the archiving
     base_template: base.html.twig              # layout the templates extend, "body" block
     entities:
         conversation: App\Entity\AssistantConversation
@@ -195,11 +195,14 @@ ai_sql_assistant:
 
 ### 5. The assets
 
-With AssetMapper, the `assets` folder of the bundle is declared under `@tknoweb/ai-sql-assistant-bundle`. Declare its two files in `importmap.php`:
+With AssetMapper, the `assets` folder of the bundle is declared under `@tknoweb/ai-sql-assistant-bundle`. Declare its three files in `importmap.php`:
 
 ```php
 '@tknoweb/ai-sql-assistant-bundle/js/controllers/chat_controller.js' => [
     'path' => '@tknoweb/ai-sql-assistant-bundle/js/controllers/chat_controller.js',
+],
+'@tknoweb/ai-sql-assistant-bundle/js/controllers/history_controller.js' => [
+    'path' => '@tknoweb/ai-sql-assistant-bundle/js/controllers/history_controller.js',
 ],
 '@tknoweb/ai-sql-assistant-bundle/styles/ai-sql-assistant.css' => [
     'path' => '@tknoweb/ai-sql-assistant-bundle/styles/ai-sql-assistant.css',
@@ -207,13 +210,15 @@ With AssetMapper, the `assets` folder of the bundle is declared under `@tknoweb/
 ],
 ```
 
-then register the Stimulus controller under the name **`ai-sql-assistant`** and import the stylesheet:
+then register the Stimulus controllers under the names **`ai-sql-assistant`** (the conversation) and **`ai-sql-assistant-history`** (the renaming of a conversation in the history) and import the stylesheet:
 
 ```js
 import AiSqlAssistant from '@tknoweb/ai-sql-assistant-bundle/js/controllers/chat_controller.js';
+import AiSqlAssistantHistory from '@tknoweb/ai-sql-assistant-bundle/js/controllers/history_controller.js';
 import '@tknoweb/ai-sql-assistant-bundle/styles/ai-sql-assistant.css';
 
 app.register('ai-sql-assistant', AiSqlAssistant);
+app.register('ai-sql-assistant-history', AiSqlAssistantHistory);
 ```
 
 ### 6. The JSON flattening, every night

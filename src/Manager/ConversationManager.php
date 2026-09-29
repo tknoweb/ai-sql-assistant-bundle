@@ -64,7 +64,7 @@ class ConversationManager
         $conversation = (new $this->entities['conversation']())
             ->setOwner($owner)
             ->setModelKey($modelKey)
-            ->setTitle(mb_strimwidth(trim($question), 0, AbstractConversation::TITLE_MAX_LENGTH, '…'));
+            ->setTitle($this->getTitle($question));
 
         $this->entityManager->persist($conversation);
 
@@ -98,6 +98,19 @@ class ConversationManager
         $this->entityManager->flush();
 
         return $turn['events'];
+    }
+
+    /**
+     * Give a conversation the title its owner typed, shortened as the one taken from its first question. A blank title is refused, so that a conversation always keeps one.
+     */
+    public function renameConversation(ConversationInterface $conversation, string $title): void
+    {
+        if ('' === trim($title)) {
+            throw new \InvalidArgumentException('The title of a conversation cannot be blank.');
+        }
+
+        $conversation->setTitle($this->getTitle($title));
+        $this->entityManager->flush();
     }
 
     /**
@@ -146,6 +159,14 @@ class ConversationManager
                 'durationMilliseconds' => $exchange->getDuration(),
             ], $exchanges),
         ];
+    }
+
+    /**
+     * Title of a conversation from a typed text, trimmed and shortened to the length of its column.
+     */
+    private function getTitle(string $text): string
+    {
+        return mb_strimwidth(trim($text), 0, AbstractConversation::TITLE_MAX_LENGTH, '…');
     }
 
     /**

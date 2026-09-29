@@ -95,7 +95,7 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
                 ->scalarNode('default_model')->info('Key of the model every new conversation runs on')->isRequired()->cannotBeEmpty()->end()
                 ->scalarNode('access_attribute')->info('Security attribute the chat is granted on')->defaultValue('ROLE_USER')->end()
                 ->scalarNode('route_name_prefix')->info('Name prefix the application imports the routes of the chat with')->defaultValue('tknoweb_ai_sql_assistant_')->end()
-                ->scalarNode('csrf_token_id')->info('CSRF token id of the archiving of a conversation')->defaultValue('tknoweb_ai_sql_assistant')->end()
+                ->scalarNode('csrf_token_id')->info('CSRF token id of the renaming and the archiving of a conversation')->defaultValue('tknoweb_ai_sql_assistant')->end()
                 ->scalarNode('base_template')->info('Layout the templates of the chat extend, filling its "body" block')->defaultValue('base.html.twig')->end()
                 ->arrayNode('entities')
                     ->info('Entities of the application extending the mapped superclasses of the bundle')

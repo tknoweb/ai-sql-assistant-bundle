@@ -15,6 +15,8 @@ costValue: "{cost} $"
 conversationCost: "Cost: {cost} $"
 questionCounter: "Questions for this request: {count}/{max}"
 questionCounterHelp: "Beyond {max} questions for a single request, the assistant applies the default rules of the dictionary and states them in its answer."
+rename: Rename
+conversationTitle: Title of the conversation
 archive: Archive
 archiveConfirmation: "Archive this conversation? It will no longer show in your history."
 conversationArchived: The conversation was archived.
