@@ -9,5 +9,5 @@ return static function (ContainerConfigurator $container): void {
         ->autoconfigure();
 
     $services->load('Tknoweb\\AiSqlAssistantBundle\\', '../src/')
-        ->exclude(['../src/Contract', '../src/Entity', '../src/Provider', '../src/TknowebAiSqlAssistantBundle.php']);
+        ->exclude(['../src/Contract', '../src/Dialect', '../src/Entity', '../src/Provider', '../src/TknowebAiSqlAssistantBundle.php']);
 };

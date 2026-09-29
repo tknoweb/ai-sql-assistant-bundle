@@ -441,7 +441,7 @@ class AssistantManager
     {
         $event = $this->getQueryEvent($input, self::MAX_DISPLAYED_ROWS) + ['toolUseId' => $toolUseId];
         if (null !== $event['error']) {
-            // Only the error message goes back to the model: MySQL states what is wrong with the query without quoting any stored value
+            // Only the error message goes back to the model, QueryManager having reduced to its code any message of the database that could quote a stored value
             return [$this->getToolResult($toolUseId, 'The query failed: '.$event['error'], true), $event];
         }
 
@@ -626,14 +626,14 @@ class AssistantManager
             ],
             [
                 'name' => self::TOOL_RUN_QUERY,
-                'description' => 'Run a single SELECT statement on the database, its curated views and its tables. The application displays its result to the user in the requested format, you never see it: the tool result only says whether the query ran, with the MySQL error message when it failed.',
+                'description' => 'Run a single SELECT statement on the database, its curated views and its tables. The application displays its result to the user in the requested format, you never see it: the tool result only says whether the query ran, with the error message of the database when it failed.',
                 'strict' => true,
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
                         'title' => ['type' => 'string', 'description' => 'Short title of the result, in the language of the user, shown above it.'],
                         'interpretation' => ['type' => 'string', 'description' => 'One sentence, in the language of the user, stating exactly what the query counts or lists: period, scope and every rule applied.'],
-                        'sql' => ['type' => 'string', 'description' => 'The SELECT statement, in MySQL 8 syntax, naming every selected column (no SELECT * nor t.*, COUNT(*) apart).'],
+                        'sql' => ['type' => 'string', 'description' => 'The SELECT statement, in the SQL dialect given by the instructions, naming every selected column (no SELECT * nor t.*, COUNT(*) apart).'],
                         'output' => ['type' => 'string', 'enum' => self::OUTPUTS, 'description' => 'Format to show the result in first, from what the user asked for: text for a single figure, table for a list or a breakdown, chart when a chart is asked for, excel when a file is asked for.'],
                         'answer_template' => [
                             'anyOf' => [['type' => 'string'], ['type' => 'null']],

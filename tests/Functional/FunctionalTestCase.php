@@ -2,12 +2,11 @@
 
 namespace Tknoweb\AiSqlAssistantBundle\Tests\Functional;
 
-use Doctrine\DBAL\Platforms\AbstractMySQLPlatform;
+use Doctrine\DBAL\Platforms\SQLitePlatform;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\SchemaTool;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Security\Core\User\InMemoryUser;
-use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Doctrine\MysqlSessionStatementMiddleware;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\Store;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\ScriptedModelProvider;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\StoreStatus;
@@ -23,26 +22,21 @@ abstract class FunctionalTestCase extends WebTestCase
         return TestKernel::class;
     }
 
-    protected static function isMysql(): bool
-    {
-        return static::getContainer()->get('doctrine.dbal.default_connection')->getDatabasePlatform() instanceof AbstractMySQLPlatform;
-    }
-
     /**
-     * Drop every table of the test database and create the schema of the test application. A MySQL database must be named "*_test", so that no other one is ever emptied by mistake.
+     * Drop every table of the test database and create the schema of the test application. A database other than the SQLite file of the tests must be named "*_test", so that no other one
+     * is ever emptied by mistake.
      */
     protected function resetDatabase(): void
     {
         $entityManager = $this->getEntityManager();
         $connection = $entityManager->getConnection();
-        if (static::isMysql() && !str_ends_with((string) $connection->getDatabase(), '_test')) {
-            $this->fail(sprintf('The MySQL database of %s must be named "*_test", since all of its tables are dropped.', TestKernel::DATABASE_URL_VARIABLE));
+        if (!$connection->getDatabasePlatform() instanceof SQLitePlatform && !str_ends_with((string) $connection->getDatabase(), '_test')) {
+            $this->fail(sprintf('The database of %s must be named "*_test", since all of its tables are dropped.', TestKernel::DATABASE_URL_VARIABLE));
         }
 
         $schemaTool = new SchemaTool($entityManager);
         $schemaTool->dropDatabase();
         $schemaTool->createSchema($entityManager->getMetadataFactory()->getAllMetadata());
-        MysqlSessionStatementMiddleware::$skippedStatements = [];
     }
 
     protected function getEntityManager(): EntityManagerInterface

@@ -82,16 +82,13 @@ class JsonCatalogSearchTest extends FunctionalTestCase
         $this->assertSame('v30', $result['results'][0]['template']);
     }
 
-    public function testSearchesAWordLiterallyOnMysql(): void
+    public function testSearchesAWordLiterally(): void
     {
-        if (!static::isMysql()) {
-            $this->markTestSkipped('SQLite has no default escape character for LIKE.');
-        }
-
         $this->insertPaths([['employee', 'profile', null, null, 'rate_x', null], ['employee', 'profile', null, null, 'ratex', null], ['employee', 'profile', null, null, 'rate%', null]]);
 
         $this->assertSame(['rate_x'], $this->catalogManager->search('rate_x')['results'][0]['generic_paths']);
         $this->assertSame(['rate%'], $this->catalogManager->search('rate%')['results'][0]['generic_paths']);
+        $this->assertSame(['results' => [], 'labels' => [], 'truncated' => false], $this->catalogManager->search('ra!e'));
     }
 
     private function insertPaths(array $paths): void

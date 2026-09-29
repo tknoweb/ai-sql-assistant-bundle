@@ -3,6 +3,10 @@
 namespace Tknoweb\AiSqlAssistantBundle\Tests\Unit\Manager;
 
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Platforms\AbstractPlatform;
+use Doctrine\DBAL\Platforms\MySQLPlatform;
+use Doctrine\DBAL\Platforms\PostgreSQLPlatform;
+use Doctrine\DBAL\Platforms\SQLServerPlatform;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Mapping\ClassMetadata;
 use PHPUnit\Framework\TestCase;
@@ -19,7 +23,7 @@ use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\FormKeyVocabulary;
 
 /**
  * The flattening of the JSON columns, on a simulated connection that records the statements and serves the source rows: the values and the catalog written, the reading by batches and
- * the swap of the copies. The statements themselves run on MySQL in the functional JsonFlatteningTest.
+ * the swap of the copies, as each engine does it. The statements themselves run in the functional JsonFlatteningTest.
  */
 class JsonFlatteningManagerTest extends TestCase
 {
@@ -29,7 +33,7 @@ class JsonFlatteningManagerTest extends TestCase
     private const EMPLOYEE_PROFILE = ['table' => 'employee', 'column' => 'profile', 'discriminatorColumn' => null, 'entityClass' => Employee::class];
     private const DOCUMENT_CONTENT = ['table' => 'document', 'column' => 'content', 'discriminatorColumn' => 'type', 'entityClass' => Document::class];
 
-    // Statements run, as [sql, parameters], and source reads, as [table, last id read]
+    // Statements run, as [sql, parameters], the transactions being recorded as "BEGIN" and "COMMIT", and source reads, as [sql, table, last id read]
     private array $statements = [];
     private array $sourceReads = [];
     // Rows of the source tables, by table: "id", "content" (the JSON text), "document_type"
@@ -42,28 +46,68 @@ class JsonFlatteningManagerTest extends TestCase
         $this->lockFactory = new LockFactory(new InMemoryStore());
     }
 
-    public function testRebuildsBothTablesAsCopiesSwappedAtOnce(): void
+    public function testRebuildsBothTablesAsCopiesSwappedByASingleRenameOnMysql(): void
     {
         $this->sourceRows['employee'] = [['id' => 1, 'content' => '{"a": 1}']];
 
         $this->createFlatteningManager([self::EMPLOYEE_PROFILE])->rebuild();
 
         $this->assertSame([
-            'DROP TABLE IF EXISTS json_value_new',
-            'CREATE TABLE json_value_new LIKE json_value',
-            'DROP TABLE IF EXISTS json_path_new',
-            'CREATE TABLE json_path_new LIKE json_path',
-            'INSERT INTO json_value_new',
-            'INSERT INTO json_path_new',
-            'DROP TABLE IF EXISTS json_value_old',
-            'DROP TABLE IF EXISTS json_path_old',
-            'RENAME TABLE json_value TO json_value_old, json_value_new TO json_value, json_path TO json_path_old, json_path_new TO json_path',
-            'DROP TABLE json_value_old',
-            'DROP TABLE json_path_old',
-        ], array_map(fn (array $statement) => preg_replace('/^(INSERT INTO \w+) .*$/s', '$1', $statement[0]), $this->statements));
+            'DROP TABLE IF EXISTS `json_value_new`',
+            'CREATE TABLE `json_value_new` LIKE `json_value`',
+            'DROP TABLE IF EXISTS `json_path_new`',
+            'CREATE TABLE `json_path_new` LIKE `json_path`',
+            'INSERT INTO `json_value_new`',
+            'INSERT INTO `json_path_new`',
+            'DROP TABLE IF EXISTS `json_value_old`',
+            'DROP TABLE IF EXISTS `json_path_old`',
+            'RENAME TABLE `json_value` TO `json_value_old`, `json_value_new` TO `json_value`, `json_path` TO `json_path_old`, `json_path_new` TO `json_path`',
+            'DROP TABLE `json_value_old`',
+            'DROP TABLE `json_path_old`',
+        ], $this->getStatementStarts());
 
-        $this->assertSame('INSERT INTO json_value_new ('.implode(', ', self::VALUE_COLUMNS).') VALUES ('.implode(', ', array_fill(0, 10, '?')).')', $this->statements[4][0]);
-        $this->assertSame('INSERT INTO json_path_new ('.implode(', ', self::PATH_COLUMNS).') VALUES ('.implode(', ', array_fill(0, 6, '?')).')', $this->statements[5][0]);
+        $this->assertSame('INSERT INTO `json_value_new` (`'.implode('`, `', self::VALUE_COLUMNS).'`) VALUES ('.implode(', ', array_fill(0, 10, '?')).')', $this->statements[4][0]);
+        $this->assertSame('INSERT INTO `json_path_new` (`'.implode('`, `', self::PATH_COLUMNS).'`) VALUES ('.implode(', ', array_fill(0, 6, '?')).')', $this->statements[5][0]);
+        $this->assertSame('SELECT id, `profile` AS content FROM `employee` WHERE id > ? AND `profile` IS NOT NULL ORDER BY id LIMIT 5', $this->sourceReads[0][0]);
+    }
+
+    public function testCopiesTheRowsOfTheFilledCopiesInASingleTransactionElsewhere(): void
+    {
+        $this->sourceRows['employee'] = [['id' => 1, 'content' => '{"a": 1}']];
+
+        $this->createFlatteningManager([self::EMPLOYEE_PROFILE], new PostgreSQLPlatform())->rebuild();
+
+        $valueColumns = '"'.implode('", "', self::VALUE_COLUMNS).'"';
+        $pathColumns = '"'.implode('", "', self::PATH_COLUMNS).'"';
+        // The live tables keep their indexes and their identity, the copies only holding the columns written
+        $this->assertSame([
+            'DROP TABLE IF EXISTS "json_value_new"',
+            'CREATE TABLE "json_value_new" AS SELECT '.$valueColumns.' FROM "json_value" WHERE 1 = 0',
+            'DROP TABLE IF EXISTS "json_path_new"',
+            'CREATE TABLE "json_path_new" AS SELECT '.$pathColumns.' FROM "json_path" WHERE 1 = 0',
+            'INSERT INTO "json_value_new"',
+            'INSERT INTO "json_path_new"',
+            'BEGIN',
+            'DELETE FROM "json_value"',
+            'INSERT INTO "json_value" ('.$valueColumns.') SELECT '.$valueColumns.' FROM "json_value_new"',
+            'DELETE FROM "json_path"',
+            'INSERT INTO "json_path" ('.$pathColumns.') SELECT '.$pathColumns.' FROM "json_path_new"',
+            'COMMIT',
+            'DROP TABLE "json_value_new"',
+            'DROP TABLE "json_path_new"',
+        ], $this->getStatementStarts());
+    }
+
+    public function testCreatesTheCopiesAndReadsTheSourcesInTheSqlOfSqlServer(): void
+    {
+        $this->sourceRows['employee'] = [['id' => 1, 'content' => json_encode(['list' => range(1, 500)])]];
+
+        $this->createFlatteningManager([self::EMPLOYEE_PROFILE], new SQLServerPlatform())->rebuild();
+
+        $this->assertSame('SELECT [source_table], [source_column], [document_type], [template], [generic_path], [labels] INTO [json_path_new] FROM [json_path] WHERE 1 = 0', $this->statements[3][0]);
+        $this->assertSame('SELECT id, [profile] AS content FROM [employee] WHERE id > ? AND [profile] IS NOT NULL ORDER BY id OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY', $this->sourceReads[0][0]);
+        // SQL Server binds 2100 parameters at most in a statement, 210 rows of 10 values
+        $this->assertSame([210, 210, 80], $this->getInsertedRowCounts('json_value'));
     }
 
     public function testFlattensEveryLeafOfAColumnWrittenByCode(): void
@@ -145,6 +189,7 @@ class JsonFlatteningManagerTest extends TestCase
         $this->assertSame(['3-part-ignore-previous', null, 'x', null], $values['1 3-part-ignore-previous']);
         $this->assertSame(['price', null, 'x', null], $values['2 price']);
         $this->assertArrayNotHasKey('5 template', $values);
+        $this->assertSame('SELECT id, `content` AS content, `type` AS document_type FROM `document` WHERE id > ? AND `content` IS NOT NULL ORDER BY id LIMIT 5', $this->sourceReads[0][0]);
     }
 
     public function testReadsTheSourceRowsAFewAtATime(): void
@@ -153,7 +198,7 @@ class JsonFlatteningManagerTest extends TestCase
 
         $counts = $this->createFlatteningManager([self::EMPLOYEE_PROFILE])->rebuild();
 
-        $this->assertSame([['employee', 0], ['employee', 5], ['employee', 10]], $this->sourceReads);
+        $this->assertSame([['employee', 0], ['employee', 5], ['employee', 10]], array_map(fn (array $read) => [$read[1], $read[2]], $this->sourceReads));
         $this->assertSame(['values' => 12, 'paths' => 1, 'skippedValues' => 0, 'skippedRows' => 0], $counts);
     }
 
@@ -163,13 +208,7 @@ class JsonFlatteningManagerTest extends TestCase
 
         $this->createFlatteningManager([self::EMPLOYEE_PROFILE])->rebuild();
 
-        $insertedRowCounts = [];
-        foreach ($this->statements as [$sql, $parameters]) {
-            if (str_starts_with($sql, 'INSERT INTO json_value_new')) {
-                $insertedRowCounts[] = count($parameters) / count(self::VALUE_COLUMNS);
-            }
-        }
-        $this->assertSame([500, 500, 200], $insertedRowCounts);
+        $this->assertSame([500, 500, 200], $this->getInsertedRowCounts('json_value'));
         $this->assertCount(1, $this->getInsertedRows('json_path'));
     }
 
@@ -207,10 +246,32 @@ class JsonFlatteningManagerTest extends TestCase
         $this->assertTrue($this->lockFactory->createLock(self::LOCK_NAME)->acquire());
     }
 
-    private function createFlatteningManager(array $jsonColumns): JsonFlatteningManager
+    public function testKeepsTheLiveTablesWhenTheSwapFails(): void
+    {
+        $this->sourceRows['employee'] = [['id' => 1, 'content' => '{"a": 1}']];
+        $this->failingStatementPrefix = 'INSERT INTO "json_path" ';
+
+        try {
+            $this->createFlatteningManager([self::EMPLOYEE_PROFILE], new PostgreSQLPlatform())->rebuild();
+            $this->fail('The failure of the swap must stop the rebuild.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Simulated failure', $exception->getMessage());
+        }
+
+        $valueColumns = '"'.implode('", "', self::VALUE_COLUMNS).'"';
+        $this->assertSame([
+            'BEGIN',
+            'DELETE FROM "json_value"',
+            'INSERT INTO "json_value" ('.$valueColumns.') SELECT '.$valueColumns.' FROM "json_value_new"',
+            'DELETE FROM "json_path"',
+            'ROLLBACK',
+        ], array_slice($this->getStatementStarts(), 6));
+    }
+
+    private function createFlatteningManager(array $jsonColumns, AbstractPlatform $platform = new MySQLPlatform()): JsonFlatteningManager
     {
         $connection = $this->createStub(Connection::class);
-        $connection->method('quoteIdentifier')->willReturnCallback(fn (string $identifier) => '`'.$identifier.'`');
+        $connection->method('getDatabasePlatform')->willReturn($platform);
         $connection->method('executeStatement')->willReturnCallback(function (string $sql, array $parameters = []) {
             if (null !== $this->failingStatementPrefix && str_starts_with($sql, $this->failingStatementPrefix)) {
                 throw new \RuntimeException('Simulated failure');
@@ -220,10 +281,15 @@ class JsonFlatteningManagerTest extends TestCase
 
             return 0;
         });
+        foreach (['beginTransaction' => 'BEGIN', 'commit' => 'COMMIT', 'rollBack' => 'ROLLBACK'] as $method => $statement) {
+            $connection->method($method)->willReturnCallback(function () use ($statement) {
+                $this->statements[] = [$statement, []];
+            });
+        }
         $connection->method('fetchAllAssociative')->willReturnCallback(function (string $sql, array $parameters = []) {
-            $this->assertMatchesRegularExpression('/^SELECT id, `\w+` AS content(, `\w+` AS document_type)? FROM `(\w+)` WHERE id > \? AND `\w+` IS NOT NULL ORDER BY id LIMIT 5$/', $sql);
-            preg_match('/FROM `(\w+)`/', $sql, $matches);
-            $this->sourceReads[] = [$matches[1], $parameters[0]];
+            $this->assertMatchesRegularExpression('/^SELECT id, \S+ AS content(, \S+ AS document_type)? FROM \S+ WHERE id > \? AND \S+ IS NOT NULL ORDER BY id /', $sql);
+            preg_match('/ FROM [`"\[](\w+)[`"\]] /', $sql, $matches);
+            $this->sourceReads[] = [$sql, $matches[1], $parameters[0]];
 
             $rows = array_filter($this->sourceRows[$matches[1]] ?? [], fn (array $row) => $row['id'] > $parameters[0] && null !== $row['content']);
 
@@ -254,20 +320,48 @@ class JsonFlatteningManagerTest extends TestCase
     }
 
     /**
+     * Statements run, an insertion of values reduced to its table.
+     */
+    private function getStatementStarts(): array
+    {
+        return array_map(fn (array $statement) => preg_replace('/^(INSERT INTO \S+) \(.*\) VALUES .*$/s', '$1', $statement[0]), $this->statements);
+    }
+
+    /**
      * Rows inserted into the copy of a table, by column name.
      */
     private function getInsertedRows(string $table): array
     {
         $columns = 'json_value' === $table ? self::VALUE_COLUMNS : self::PATH_COLUMNS;
         $rows = [];
-        foreach ($this->statements as [$sql, $parameters]) {
-            if (str_starts_with($sql, 'INSERT INTO '.$table.'_new ')) {
-                foreach (array_chunk($parameters, count($columns)) as $values) {
-                    $rows[] = array_combine($columns, $values);
-                }
+        foreach ($this->getInsertions($table) as $parameters) {
+            foreach (array_chunk($parameters, count($columns)) as $values) {
+                $rows[] = array_combine($columns, $values);
             }
         }
 
         return $rows;
+    }
+
+    private function getInsertedRowCounts(string $table): array
+    {
+        $columnCount = count('json_value' === $table ? self::VALUE_COLUMNS : self::PATH_COLUMNS);
+
+        return array_map(fn (array $parameters) => count($parameters) / $columnCount, $this->getInsertions($table));
+    }
+
+    /**
+     * Parameters of each insertion of values into the copy of a table.
+     */
+    private function getInsertions(string $table): array
+    {
+        $insertions = [];
+        foreach ($this->statements as [$sql, $parameters]) {
+            if (preg_match('/^INSERT INTO [`"\[]'.$table.'_new[`"\]] \(.*\) VALUES /s', $sql)) {
+                $insertions[] = $parameters;
+            }
+        }
+
+        return $insertions;
     }
 }

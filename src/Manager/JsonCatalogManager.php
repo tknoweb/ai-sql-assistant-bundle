@@ -6,6 +6,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use Tknoweb\AiSqlAssistantBundle\Contract\JsonKeyVocabularyInterface;
+use Tknoweb\AiSqlAssistantBundle\Dialect\SqlDialect;
 
 /**
  * Catalog of the paths of the flattened JSON values, which the assistant searches to write its queries: the keys of a JSON content cannot be listed from the code, so the catalog is made of
@@ -25,6 +26,8 @@ class JsonCatalogManager
     // Paths kept from a single kind of document and template version, so that the others still show
     private const MAX_RESULTS_PER_GROUP = 8;
     private const MAX_SEARCHED_WORDS = 5;
+    // Escape character of the LIKE patterns, set explicitly since the engines differ in their default one
+    private const LIKE_ESCAPE_CHARACTER = '!';
 
     public function __construct(
         private readonly EntityManagerInterface $entityManager,
@@ -175,36 +178,42 @@ class JsonCatalogManager
      * Paths whose generic path or labels contain at least one word of $words, those matching the most words first, then the latest templates. At most $groupLimit paths come from the same kind
      * of document and template version, so that a document whose tables multiply the paths (per gender, per year...) does not hide the other documents: one more path of a group is returned,
      * with its "group_rank", only to tell that the group was cut.
-     * Written in SQL since the score, the number of words matched, is a sum of conditions DQL cannot order by.
+     * Written in SQL since the score, the number of words matched, is a sum of conditions DQL cannot order by. The words being in lower case, so are the paths and labels they are compared
+     * to, whatever the collation of the engine.
      */
     private function findMatchingPaths(array $words, int $limit, int $groupLimit): array
     {
+        $connection = $this->entityManager->getConnection();
+        $platform = $connection->getDatabasePlatform();
+
         // Each condition is written twice, for the score and for the filter, with its own placeholders since a named placeholder can only be used once
         $conditions = ['score' => [], 'filter' => []];
         $parameters = [];
         foreach (array_values($words) as $index => $word) {
-            $pattern = '%'.addcslashes($word, '%_\\').'%';
+            $pattern = '%'.$platform->escapeStringForLike($word, self::LIKE_ESCAPE_CHARACTER).'%';
             foreach (array_keys($conditions) as $use) {
-                $conditions[$use][] = sprintf("(generic_path LIKE :%1\$s_%2\$d OR COALESCE(labels, '') LIKE :%1\$s_label_%2\$d)", $use, $index);
+                $conditions[$use][] = sprintf(
+                    "(LOWER(generic_path) LIKE :%1\$s_%2\$d ESCAPE '%3\$s' OR LOWER(COALESCE(labels, '')) LIKE :%1\$s_label_%2\$d ESCAPE '%3\$s')",
+                    $use,
+                    $index,
+                    self::LIKE_ESCAPE_CHARACTER
+                );
                 $parameters[$use.'_'.$index] = $pattern;
                 $parameters[$use.'_label_'.$index] = $pattern;
             }
         }
 
-        $connection = $this->entityManager->getConnection();
-
         return $connection->fetchAllAssociative(
-            sprintf(
+            $platform->modifyLimitQuery(sprintf(
                 'SELECT source_table, source_column, document_type, template, generic_path, labels, score, group_rank FROM ('
                 .'SELECT scored_path.*, ROW_NUMBER() OVER (PARTITION BY source_table, source_column, document_type, template ORDER BY score DESC, generic_path) AS group_rank FROM ('
                 .'SELECT source_table, source_column, document_type, template, generic_path, labels, %1$s AS score FROM %2$s WHERE %3$s'
-                .') scored_path) ranked_path WHERE group_rank <= %4$d + 1 ORDER BY score DESC, template DESC, source_table, document_type, generic_path LIMIT %5$d',
-                implode(' + ', $conditions['score']),
-                $connection->quoteIdentifier($this->entityManager->getClassMetadata($this->entities['json_path'])->getTableName()),
+                .') scored_path) ranked_path WHERE group_rank <= %4$d + 1 ORDER BY score DESC, template DESC, source_table, document_type, generic_path',
+                implode(' + ', array_map(fn (string $condition) => sprintf('CASE WHEN %s THEN 1 ELSE 0 END', $condition), $conditions['score'])),
+                SqlDialect::quoteName($platform, $this->entityManager->getClassMetadata($this->entities['json_path'])->getTableName()),
                 implode(' OR ', $conditions['filter']),
-                $groupLimit,
-                $limit
-            ),
+                $groupLimit
+            ), $limit),
             $parameters
         );
     }

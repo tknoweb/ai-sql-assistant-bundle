@@ -4,7 +4,9 @@ namespace Tknoweb\AiSqlAssistantBundle\Tests\Unit\Manager;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Translation\Translator;
+use Tknoweb\AiSqlAssistantBundle\Dialect\SqlServerDialect;
 use Tknoweb\AiSqlAssistantBundle\Manager\PromptManager;
+use Tknoweb\AiSqlAssistantBundle\Manager\QueryManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\SchemaManager;
 
 /**
@@ -17,19 +19,30 @@ class PromptManagerTest extends TestCase
         $schemaManager = $this->createStub(SchemaManager::class);
         $schemaManager->method('getTableList')->willReturn('- `store`');
 
-        $systemTexts = (new PromptManager(new Translator('en'), $schemaManager, ['instructions' => null, 'dictionary' => null, 'database' => null], [], 'messages', 'en'))->getSystemTexts();
+        $systemTexts = $this->createPromptManager($schemaManager, null)->getSystemTexts();
 
         $this->assertCount(2, $systemTexts);
-        $this->assertSame(trim(file_get_contents(dirname(__DIR__, 3).'/resources/prompt/instructions.md')), $systemTexts[0]);
+        $instructions = trim(file_get_contents(dirname(__DIR__, 3).'/resources/prompt/instructions.md'));
+        $this->assertStringContainsString('{sql_dialect}', $instructions);
+        $this->assertSame(str_replace('{sql_dialect}', 'SQL Server (Transact-SQL)', $instructions), $systemTexts[0]);
+        $this->assertStringContainsString('in SQL Server (Transact-SQL) syntax', $systemTexts[0]);
         $this->assertSame("<database>\n## Database tables\n\n- `store`\n</database>", $systemTexts[1]);
     }
 
     public function testRefusesADocumentItCannotRead(): void
     {
-        $promptManager = new PromptManager(new Translator('en'), $this->createStub(SchemaManager::class), ['instructions' => '/missing/instructions.md', 'dictionary' => null, 'database' => null], [], 'messages', 'en');
+        $promptManager = $this->createPromptManager($this->createStub(SchemaManager::class), '/missing/instructions.md');
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('The assistant document "/missing/instructions.md" cannot be read.');
         $promptManager->getSystemTexts();
+    }
+
+    private function createPromptManager(SchemaManager $schemaManager, ?string $instructions): PromptManager
+    {
+        $queryManager = $this->createStub(QueryManager::class);
+        $queryManager->method('getDialect')->willReturn(new SqlServerDialect());
+
+        return new PromptManager(new Translator('en'), $schemaManager, $queryManager, ['instructions' => $instructions, 'dictionary' => null, 'database' => null], [], 'messages', 'en');
     }
 }

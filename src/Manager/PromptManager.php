@@ -6,17 +6,21 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 /**
- * Builds the system prompt of the assistant: the base instructions of the bundle, then the documents of the application set in the "prompt" configuration (its own instructions, its business
- * dictionary and the description of its curated views), completed with the codes of the coded columns and their label, generated from the enums so that they never drift from the
- * translations, and with the list of the database tables, generated from the Doctrine mapping (their columns are given on demand by the describe_tables tool).
+ * Builds the system prompt of the assistant: the base instructions of the bundle, naming the SQL dialect of the query connection, then the documents of the application set in the "prompt"
+ * configuration (its own instructions, its business dictionary and the description of its curated views), completed with the codes of the coded columns and their label, generated from the
+ * enums so that they never drift from the translations, and with the list of the database tables, generated from the Doctrine mapping (their columns are given on demand by the
+ * describe_tables tool).
  */
 class PromptManager
 {
     private const BASE_INSTRUCTIONS_DOCUMENT = __DIR__.'/../../resources/prompt/instructions.md';
+    // Placeholder of the base instructions standing for the SQL dialect of the database
+    private const SQL_DIALECT_PLACEHOLDER = '{sql_dialect}';
 
     public function __construct(
         private readonly TranslatorInterface $translator,
         private readonly SchemaManager $schemaManager,
+        private readonly QueryManager $queryManager,
         #[Autowire('%tknoweb_ai_sql_assistant.prompt%')]
         private readonly array $documents,
         #[Autowire('%tknoweb_ai_sql_assistant.coded_columns%')]
@@ -34,7 +38,7 @@ class PromptManager
      */
     public function getSystemTexts(): array
     {
-        $instructions = $this->getDocument(self::BASE_INSTRUCTIONS_DOCUMENT);
+        $instructions = str_replace(self::SQL_DIALECT_PLACEHOLDER, $this->queryManager->getDialect()->getName(), $this->getDocument(self::BASE_INSTRUCTIONS_DOCUMENT));
         if (null !== $this->documents['instructions']) {
             $instructions .= "\n\n".$this->getDocument($this->documents['instructions']);
         }

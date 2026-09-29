@@ -2,8 +2,8 @@
 
 namespace Tknoweb\AiSqlAssistantBundle\Tests\Functional;
 
+use Doctrine\DBAL\Exception as DBALException;
 use Tknoweb\AiSqlAssistantBundle\Manager\QueryManager;
-use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Doctrine\MysqlSessionStatementMiddleware;
 
 /**
  * The queries of the model on the database of the test application, through the connection set in the "connection" configuration of the bundle.
@@ -27,10 +27,7 @@ class QueryManagerTest extends FunctionalTestCase
         $this->assertSame(['name', 'store_status'], $result['columns']);
         $this->assertSame([['name' => 'Alpha store', 'store_status' => 'open'], ['name' => 'Gamma store', 'store_status' => 'open']], $result['rows']);
         $this->assertFalse($result['truncated']);
-
-        if (!static::isMysql()) {
-            $this->assertSame(['SET SESSION max_execution_time = 10000', 'SET SESSION TRANSACTION READ ONLY'], MysqlSessionStatementMiddleware::$skippedStatements);
-        }
+        $this->assertFalse(static::getContainer()->get('doctrine.dbal.assistant_connection')->isTransactionActive(), 'The transaction of the query must be rolled back.');
     }
 
     public function testRefusesTheForbiddenNamesOfTheMapping(): void
@@ -53,15 +50,11 @@ class QueryManagerTest extends FunctionalTestCase
         }
     }
 
-    public function testRefusesToWriteOnMysql(): void
+    public function testLeavesTheQueryConnectionReadOnly(): void
     {
-        if (!static::isMysql()) {
-            $this->markTestSkipped('The read only session is a MySQL setting.');
-        }
-
         // The session of the query connection is left read only, which refuses a write even to a user allowed to write, as the test one is
         $this->queryManager->execute('SELECT name FROM store', 10);
-        $this->expectException(\Doctrine\DBAL\Exception::class);
+        $this->expectException(DBALException::class);
         static::getContainer()->get('doctrine.dbal.assistant_connection')->executeStatement("INSERT INTO region (name) VALUES ('Written')");
     }
 }

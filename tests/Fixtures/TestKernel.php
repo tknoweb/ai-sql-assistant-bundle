@@ -14,7 +14,6 @@ use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
 use Symfony\Component\Security\Core\User\InMemoryUser;
 use Symfony\UX\Chartjs\ChartjsBundle;
 use Symfony\UX\StimulusBundle\StimulusBundle;
-use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Doctrine\MysqlSessionStatementMiddleware;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\AuditLog;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\Conversation;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\ConversationExchange;
@@ -25,8 +24,8 @@ use Tknoweb\AiSqlAssistantBundle\TknowebAiSqlAssistantBundle;
 
 /**
  * Application the functional tests run the bundle in: a few entities, three users, and the scripted model provider in place of any real API.
- * Its database is a SQLite file, both connections sharing it, unless AI_SQL_ASSISTANT_TEST_DATABASE_URL gives a MySQL test database. The Doctrine naming strategy is left to its default,
- * so that nothing of the bundle depends on the underscore one most applications use.
+ * Its database is a SQLite file, both connections sharing it, unless AI_SQL_ASSISTANT_TEST_DATABASE_URL gives another test database (MySQL, MariaDB, PostgreSQL, SQL Server). The Doctrine
+ * naming strategy is left to its default, so that nothing of the bundle depends on the underscore one most applications use.
  */
 class TestKernel extends Kernel
 {
@@ -180,11 +179,6 @@ class TestKernel extends Kernel
         $services->set(PublicReferentialProvider::class)->public();
         $services->set(FormKeyVocabulary::class);
         $services->load('Tknoweb\\AiSqlAssistantBundle\\Tests\\Fixtures\\Repository\\', __DIR__.'/Repository');
-
-        // SQLite stands in for MySQL: the session settings QueryManager applies before each query are MySQL statements
-        if (null === $databaseUrl) {
-            $services->set(MysqlSessionStatementMiddleware::class)->tag('doctrine.middleware', ['connection' => 'assistant']);
-        }
     }
 
     protected function configureRoutes(RoutingConfigurator $routes): void

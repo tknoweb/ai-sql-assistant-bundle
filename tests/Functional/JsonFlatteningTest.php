@@ -3,21 +3,16 @@
 namespace Tknoweb\AiSqlAssistantBundle\Tests\Functional;
 
 use Tknoweb\AiSqlAssistantBundle\Manager\JsonFlatteningManager;
-use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\TestKernel;
 
 /**
- * The flattening on a real MySQL database: the copies are created, filled and swapped with the live tables, which a query of the model then reads. Skipped on SQLite, which has neither
- * CREATE TABLE ... LIKE nor a multiple RENAME TABLE (the logic itself is covered by Unit\Manager\JsonFlatteningManagerTest).
+ * The flattening on the database of the test application: the copies are created, filled and swapped with the live tables, as the engine of the database does it, and a query of the model
+ * then reads them.
  */
 class JsonFlatteningTest extends FunctionalTestCase
 {
     protected function setUp(): void
     {
         self::bootKernel();
-        if (!static::isMysql()) {
-            $this->markTestSkipped(sprintf('The flattening swaps MySQL tables: set %s to a MySQL test database to run it.', TestKernel::DATABASE_URL_VARIABLE));
-        }
-
         $this->resetDatabase();
     }
 
@@ -34,13 +29,18 @@ class JsonFlatteningTest extends FunctionalTestCase
             $this->assertSame(['values' => 4, 'paths' => 3, 'skippedValues' => 0, 'skippedRows' => 0], $flatteningManager->rebuild(), 'Run '.$run);
         }
 
+        $values = $connection->fetchAllAssociative("SELECT source_table, generic_path, path_id1, number_value FROM json_value WHERE generic_path IN ('3-part-price-median-*', 'address[city]') ORDER BY source_table");
         $this->assertSame(
-            [['document', '3-part-price-median-*', '45', '30000.000000'], ['employee', 'address[city]', null, null]],
-            $connection->fetchAllNumeric("SELECT source_table, generic_path, CAST(path_id1 AS CHAR), CAST(number_value AS CHAR) FROM json_value WHERE generic_path IN ('3-part-price-median-*', 'address[city]') ORDER BY source_table")
+            [['document', '3-part-price-median-*', 45, 30000.0], ['employee', 'address[city]', null, null]],
+            array_map(fn (array $row) => [$row['source_table'], $row['generic_path'], null !== $row['path_id1'] ? (int) $row['path_id1'] : null, null !== $row['number_value'] ? (float) $row['number_value'] : null], $values)
         );
         $this->assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM json_value WHERE value = 'never flattened'"));
         $this->assertSame(['3-part-price-median-*', 'address[city]', 'template'], $connection->fetchFirstColumn('SELECT generic_path FROM json_path ORDER BY generic_path'));
-        $this->assertSame([], $connection->fetchFirstColumn("SHOW TABLES LIKE 'json\\_%\\_new'"));
-        $this->assertSame([], $connection->fetchFirstColumn("SHOW TABLES LIKE 'json\\_%\\_old'"));
+
+        // The values are those of the last run only, and no copy is left
+        $this->assertSame(4, (int) $connection->fetchOne('SELECT COUNT(*) FROM json_value'));
+        foreach (['json_value_new', 'json_path_new', 'json_value_old', 'json_path_old'] as $copy) {
+            $this->assertFalse($connection->createSchemaManager()->tablesExist([$copy]), $copy);
+        }
     }
 }

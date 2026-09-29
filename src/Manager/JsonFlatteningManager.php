@@ -7,21 +7,21 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Lock\LockFactory;
 use Tknoweb\AiSqlAssistantBundle\Contract\JsonKeyVocabularyInterface;
+use Tknoweb\AiSqlAssistantBundle\Dialect\SqlDialect;
 use Tknoweb\AiSqlAssistantBundle\Entity\AbstractJsonValue;
 
 /**
  * Rebuilds the table of the flattened JSON values, one row per value of the JSON columns of SchemaManager::getJsonColumns(), and its catalog, so that the assistant queries them in plain SQL.
  * Meant to run every night rather than on each save, the volume being high.
- * Both tables are filled as copies ("<table>_new"), then swapped with the live ones in a single RENAME, so that a query never sees them half built: the schema filter of the connection must
- * hide those copies from the migrations. The memory stays bounded whatever the volume: the source rows are read a few at a time, the values are inserted by batches, and only a hash of each
- * path already met is kept.
+ * Both tables are filled as copies ("<table>_new"), then swapped with the live ones at once, as the SqlDialect of the connection does it, so that a query never sees them half built: the
+ * schema filter of the connection must hide those copies from the migrations. The memory stays bounded whatever the volume: the source rows are read a few at a time, the values are
+ * inserted by batches, and only a hash of each path already met is kept.
  */
 class JsonFlatteningManager
 {
     private const VALUE_TABLE = 'value';
     private const PATH_TABLE = 'path';
     private const NEW_TABLE_SUFFIX = '_new';
-    private const OLD_TABLE_SUFFIX = '_old';
 
     // Source rows read at once: a JSON content can weigh a few megabytes once decoded, so this is what bounds the memory used
     private const SOURCE_BATCH_SIZE = 5;
@@ -38,6 +38,7 @@ class JsonFlatteningManager
     private array $insertBuffers = [];
     private array $insertBufferBytes = [];
     private readonly Connection $connection;
+    private SqlDialect $dialect;
     // Table names, by VALUE_TABLE and PATH_TABLE
     private array $tables = [];
 
@@ -64,6 +65,7 @@ class JsonFlatteningManager
         }
 
         try {
+            $this->dialect = SqlDialect::fromPlatform($this->connection->getDatabasePlatform());
             $this->tables = [
                 self::VALUE_TABLE => $this->entityManager->getClassMetadata($this->entities['json_value'])->getTableName(),
                 self::PATH_TABLE => $this->entityManager->getClassMetadata($this->entities['json_path'])->getTableName(),
@@ -89,25 +91,26 @@ class JsonFlatteningManager
 
     private function createNewTables(): void
     {
-        foreach ($this->tables as $table) {
-            $this->connection->executeStatement(sprintf('DROP TABLE IF EXISTS %s', $table.self::NEW_TABLE_SUFFIX));
-            $this->connection->executeStatement(sprintf('CREATE TABLE %s LIKE %s', $table.self::NEW_TABLE_SUFFIX, $table));
+        foreach ($this->tables as $key => $table) {
+            $this->dialect->createCopy($this->connection, $table, $table.self::NEW_TABLE_SUFFIX, $this->getColumns($key));
         }
     }
 
     private function swapTables(): void
     {
-        $renames = [];
-        foreach ($this->tables as $table) {
-            $this->connection->executeStatement(sprintf('DROP TABLE IF EXISTS %s', $table.self::OLD_TABLE_SUFFIX));
-            $renames[] = sprintf('%1$s TO %1$s%2$s, %1$s%3$s TO %1$s', $table, self::OLD_TABLE_SUFFIX, self::NEW_TABLE_SUFFIX);
+        $copies = [];
+        $columns = [];
+        foreach ($this->tables as $key => $table) {
+            $copies[$table] = $table.self::NEW_TABLE_SUFFIX;
+            $columns[$table] = $this->getColumns($key);
         }
 
-        $this->connection->executeStatement('RENAME TABLE '.implode(', ', $renames));
+        $this->dialect->swapCopies($this->connection, $copies, $columns);
+    }
 
-        foreach ($this->tables as $table) {
-            $this->connection->executeStatement(sprintf('DROP TABLE %s', $table.self::OLD_TABLE_SUFFIX));
-        }
+    private function getColumns(string $table): array
+    {
+        return self::VALUE_TABLE === $table ? self::VALUE_COLUMNS : self::PATH_COLUMNS;
     }
 
     /**
@@ -115,13 +118,13 @@ class JsonFlatteningManager
      */
     private function flattenColumn(array $jsonColumn, array &$metPaths, array &$counts): void
     {
-        $sql = sprintf(
-            'SELECT id, %1$s AS content%2$s FROM %3$s WHERE id > ? AND %1$s IS NOT NULL ORDER BY id LIMIT %4$d',
-            $this->connection->quoteIdentifier($jsonColumn['column']),
-            null !== $jsonColumn['discriminatorColumn'] ? ', '.$this->connection->quoteIdentifier($jsonColumn['discriminatorColumn']).' AS document_type' : '',
-            $this->connection->quoteIdentifier($jsonColumn['table']),
-            self::SOURCE_BATCH_SIZE
-        );
+        $platform = $this->connection->getDatabasePlatform();
+        $sql = $platform->modifyLimitQuery(sprintf(
+            'SELECT id, %1$s AS content%2$s FROM %3$s WHERE id > ? AND %1$s IS NOT NULL ORDER BY id',
+            SqlDialect::quoteName($platform, $jsonColumn['column']),
+            null !== $jsonColumn['discriminatorColumn'] ? ', '.SqlDialect::quoteName($platform, $jsonColumn['discriminatorColumn']).' AS document_type' : '',
+            SqlDialect::quoteName($platform, $jsonColumn['table'])
+        ), self::SOURCE_BATCH_SIZE);
 
         $vocabulary = $this->catalogManager->getVocabulary($jsonColumn['entityClass'], $jsonColumn['column']);
         $lastId = 0;
@@ -263,7 +266,9 @@ class JsonFlatteningManager
         $this->insertBuffers[$table][] = $row;
         $this->insertBufferBytes[$table] = ($this->insertBufferBytes[$table] ?? 0) + array_sum(array_map(fn (mixed $value) => strlen((string) $value), $row));
 
-        if (count($this->insertBuffers[$table]) >= self::INSERT_BATCH_SIZE || $this->insertBufferBytes[$table] >= self::INSERT_BATCH_MAX_BYTES) {
+        // Each value binds a parameter, which some engines limit per statement (2100 on SQL Server)
+        $maxRows = min(self::INSERT_BATCH_SIZE, intdiv($this->dialect->getMaxParameters(), count($row)));
+        if (count($this->insertBuffers[$table]) >= $maxRows || $this->insertBufferBytes[$table] >= self::INSERT_BATCH_MAX_BYTES) {
             $this->flushInsertBuffer($table);
         }
     }
@@ -277,11 +282,17 @@ class JsonFlatteningManager
             return;
         }
 
-        $columns = self::VALUE_TABLE === $table ? self::VALUE_COLUMNS : self::PATH_COLUMNS;
+        $columns = $this->getColumns($table);
         $rowPlaceholders = '('.implode(', ', array_fill(0, count($columns), '?')).')';
+        $platform = $this->connection->getDatabasePlatform();
 
         $this->connection->executeStatement(
-            sprintf('INSERT INTO %s (%s) VALUES %s', $this->tables[$table].self::NEW_TABLE_SUFFIX, implode(', ', $columns), implode(', ', array_fill(0, count($rows), $rowPlaceholders))),
+            sprintf(
+                'INSERT INTO %s (%s) VALUES %s',
+                SqlDialect::quoteName($platform, $this->tables[$table].self::NEW_TABLE_SUFFIX),
+                SqlDialect::quoteNames($platform, $columns),
+                implode(', ', array_fill(0, count($rows), $rowPlaceholders))
+            ),
             array_merge(...$rows)
         );
     }

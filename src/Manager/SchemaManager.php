@@ -11,7 +11,7 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
  * Describes the database tables the assistant may query, from the Doctrine mapping, so that a new table or column becomes available without any change here: every mapped table but the
- * forbidden ones, and every column but the forbidden ones, as set in the "forbidden" configuration of the bundle. The read-only MySQL user of the assistant can read the whole database, so
+ * forbidden ones, and every column but the forbidden ones, as set in the "forbidden" configuration of the bundle. The read-only database user of the assistant can read the whole database, so
  * this list is what keeps them out: QueryManager refuses any query naming them. The conversations and their log are always forbidden, since they hold the requests of the other users.
  * The descriptions only hold names, types and codes, never a stored value, so they can be sent to the model.
  */

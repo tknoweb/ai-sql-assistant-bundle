@@ -2,7 +2,7 @@
 
 Statistics assistant for Symfony: the user asks a question in natural language, an AI model writes the SQL query, the application runs it and displays the result as a sentence, a table, a chart or an Excel file. The model is your choice: Claude (Anthropic), OpenAI, Gemini, Mistral, a local model served by Ollama, or any other provider plugged in by the application.
 
-**The model never sees any data of the database.** It receives the question, the description of the schema (names of tables and columns, codes) and, when a query fails, the MySQL error message, filtered so that it never quotes a value. The result of its queries is displayed by the application: the model does not even know how many rows it holds.
+**The model never sees any data of the database.** It receives the question, the description of the schema (names of tables and columns, codes) and, when a query fails, the error message of the database, filtered so that it never quotes a value. The result of its queries is displayed by the application: the model does not even know how many rows it holds.
 
 ## Claude Code integration in a consuming project
 
@@ -29,7 +29,8 @@ The `@vendor/...` line must be plain text, not inside a code block.
 
 ## Requirements
 
-- PHP 8.2+, Symfony 7.1+, Doctrine ORM 3, **MySQL 8** (the protections of the queries and the error messages are specific to MySQL).
+- PHP 8.2+, Symfony 7.1+, Doctrine ORM 3 on DBAL 3.8+ or 4.
+- One of these databases, detected from the DBAL connection (see "Database engines"): **MySQL 8**, **MariaDB 10.4+**, **PostgreSQL 10+**, **SQL Server 2017+**, or SQLite 3.25+ for tests and small applications.
 - Twig, Symfony forms, Security (a logged-in user), Stimulus and Turbo (Symfony UX), `symfony/ux-chartjs`, PhpSpreadsheet.
 - An API key of the chosen provider (none for a local model).
 
@@ -45,13 +46,33 @@ Register the bundle in `config/bundles.php`:
 Tknoweb\AiSqlAssistantBundle\TknowebAiSqlAssistantBundle::class => ['all' => true],
 ```
 
-### 1. A read-only MySQL user
+### 1. A read-only database user
 
-The queries of the model must go through a user that cannot write anything:
+The queries of the model must go through a user that cannot write anything. On MySQL or MariaDB:
 
 ```sql
 CREATE USER 'app_assistant'@'%' IDENTIFIED BY '<password>';
 GRANT SELECT ON app_database.* TO 'app_assistant'@'%';
+```
+
+On PostgreSQL, run by the owner of the tables so that the future ones are readable too:
+
+```sql
+CREATE ROLE app_assistant LOGIN PASSWORD '<password>';
+GRANT CONNECT ON DATABASE app_database TO app_assistant;
+GRANT USAGE ON SCHEMA public TO app_assistant;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_assistant;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO app_assistant;
+ALTER ROLE app_assistant SET default_transaction_read_only = on;
+```
+
+On SQL Server, a user of the single `db_datareader` role, which reads every table, the future ones included:
+
+```sql
+CREATE LOGIN app_assistant WITH PASSWORD = '<password>';
+USE app_database;
+CREATE USER app_assistant FOR LOGIN app_assistant;
+ALTER ROLE db_datareader ADD MEMBER app_assistant;
 ```
 
 and a dedicated DBAL connection:
@@ -64,7 +85,7 @@ doctrine:
                 url: '%env(resolve:DATABASE_ASSISTANT_URL)%'
 ```
 
-The sensitive tables and columns are not kept out by MySQL but by the bundle, which refuses any query naming them (see "Security"). A new table therefore becomes readable without any new grant.
+The sensitive tables and columns are not kept out by the grants of the database but by the bundle, which refuses any query naming them (see "Security"). A new table therefore becomes readable without any new grant.
 
 ### 2. The entities
 
@@ -114,7 +135,7 @@ class AssistantJsonPath extends AbstractJsonPath {}
 
 The repositories of the first two implement `ConversationRepositoryInterface` (`findForOwner()`, conversations not archived, the most recent first) and `ConversationExchangeRepositoryInterface` (`findBetween()`, for the export). Then generate the migration with `doctrine:migrations:diff`.
 
-The flat tables are filled as `<table>_new` copies, then swapped: hide them from the migrations with a schema filter on the default connection, for instance `schema_filter: ~^(?!assistant_json_(value|path)_(new|old)$)~`.
+The flat tables are filled as `<table>_new` copies, then swapped with the live ones (renamed at once on MySQL and MariaDB, the previous tables being kept as `<table>_old` for an instant, copied into the live tables in a single transaction elsewhere): hide those copies from the migrations with a schema filter on the default connection, for instance `schema_filter: ~^(?!assistant_json_(value|path)_(new|old)$)~`.
 
 ### 3. The configuration
 
@@ -219,6 +240,17 @@ Each model of `models` names a provider of `providers`. A conversation keeps its
 
 The provider receives the questions of the users, the schema and the filtered error messages, never any data of the database: its retention terms for the questions still have to be validated before using it.
 
+## Database engines
+
+The bundle reads the engine from the DBAL platform of the `connection`, and adapts to it the SQL dialect named to the model, the reading of its queries (quotes, comments), the settings of their session, the errors passed on to the model and the swap of the flattening. Everything else goes through DBAL. Whatever the engine, each query of the model runs in a transaction that is always rolled back.
+
+- **MySQL 8 and MariaDB**: read-only session and time limit (`max_execution_time`, `max_statement_time` on MariaDB), copies of the flattening swapped by a single `RENAME TABLE`.
+- **PostgreSQL**: read-only session and `statement_timeout`. A query may not name a table or its alias on its own (`SELECT t FROM employee t`, `row_to_json(t)`), which PostgreSQL reads as the whole row, every column included, nor call the functions reading the files of the server or running the SQL of a string.
+- **SQL Server**: it has no read-only session, so the user must only be a member of `db_datareader`. Since SQL Server chains statements without any semicolon, every statement keyword is refused (`SET`, `EXEC`, `WAITFOR`, `DECLARE`...), as well as `OPENQUERY`, `OPENROWSET` and `OPENDATASOURCE`. The time limit of a query needs the `pdo_sqlsrv` driver, the `sqlsrv` one only bounding the waits for a lock. The flattening binds at most 2100 parameters at once, the limit of SQL Server.
+- **SQLite**: connection in `query_only` mode, but no time limit.
+
+A query is also refused when an engine could read it in another way than the bundle, depending on its settings or its version: a backslash in a string or a quoted name, a comment inside a comment, `--` directly followed by a character on MySQL, a dollar-quoted string on PostgreSQL, outside strings a character beyond ASCII that is not a letter.
+
 ## Customization
 
 - **Templates.** The Bootstrap 5 templates of the bundle (`templates/chat/`) are overridden in `templates/bundles/TknowebAiSqlAssistantBundle/chat/`. They receive `baseTemplate`, `routePrefix` and `csrfTokenId`.
@@ -228,16 +260,16 @@ The provider receives the questions of the users, the schema and the filtered er
 
 ## Security
 
-- MySQL user without any write grant, read-only session, 10 seconds at most per query, a single `SELECT` statement (or `WITH`).
-- Refusal of any query naming a forbidden table or column, of the star (`SELECT *`, `t.*`, `COUNT(*)` apart), of the `TABLE` and `INTO` keywords and of the executable comments `/*! */`.
-- Only the MySQL error messages that can only quote the query or the schema go back to the model; the other ones (an `EXTRACTVALUE` error built to leak a value, for instance) are reduced to their code.
+- Database user without any write grant, read-only session where the engine has one, a transaction rolled back after each query, 10 seconds at most per query, a single `SELECT` statement (or `WITH`).
+- Refusal of any query naming a forbidden table or column, of the star (`SELECT *`, `t.*`, `COUNT(*)` apart), of the `TABLE` and `INTO` keywords, of the keywords of the statements that write (`UPDATE`, `DELETE`..., which a `WITH` could introduce), of the executable comments `/*! */`, and the checks specific to each engine (see "Database engines").
+- Only the error messages that can only quote the query or the schema go back to the model, by error code or SQLSTATE of each engine; the other ones (an `EXTRACTVALUE` error built to leak a value on MySQL, a failed conversion quoting a string on SQL Server, for instance) are reduced to their code.
 - Each user only sees their own conversations; the ones of the other users answer 404. The conversations and their log are always forbidden to the queries of the model.
 
 ## Tests
 
 The PHPUnit suite of the bundle runs offline: the model APIs are simulated, no test calls a paid API.
 
-The repository provides its own Docker environment (`compose.yaml`): PHP with the extensions and drivers it needs, and a throwaway MySQL database kept in memory. No port is published, so it never gets in the way of another project.
+The repository provides its own Docker environment (`compose.yaml`): PHP with the extensions and drivers it needs, and a throwaway MySQL database kept in memory. No port is published, so it never gets in the way of another project. PostgreSQL and SQL Server are covered by the unit tests, on their DBAL platforms, without any server.
 
 ```bash
 docker compose run --rm php composer install
@@ -246,13 +278,15 @@ docker compose run --rm php vendor/bin/phpunit                  # on SQLite
 docker compose up -d --wait mysql                               # then on MySQL
 docker compose run --rm -e "AI_SQL_ASSISTANT_TEST_DATABASE_URL=mysql://root:test@mysql:3306/assistant_test?serverVersion=8.4&charset=utf8mb4" php vendor/bin/phpunit
 docker compose stop mysql
+
+docker compose run --rm php vendor/bin/php-cs-fixer fix         # coding standard (@Symfony rules)
 ```
 
-Without Docker, with PHP and its extensions installed: `composer install`, then `vendor/bin/phpunit`.
+Without Docker, with PHP and its extensions installed: `composer install`, then `vendor/bin/phpunit` and `vendor/bin/php-cs-fixer fix`.
 
-- `tests/Unit`: the logic of each class, its dependencies simulated (guard of the queries and filtering of the MySQL errors, conversation loop, Anthropic and OpenAI compatible providers on a simulated HTTP client, JSON flattening and catalog, results and Excel, evaluation, configuration of the bundle).
+- `tests/Unit`: the logic of each class, its dependencies simulated (dialect of each engine, guard of the queries and filtering of the errors on each engine, conversation loop, Anthropic and OpenAI compatible providers on a simulated HTTP client, JSON flattening and catalog, results and Excel, evaluation, configuration of the bundle).
 - `tests/Functional`: the bundle in a test application (`tests/Fixtures/TestKernel.php`: a few entities, three users, a scripted model provider), on a SQLite file: schema described to the model, prompt, queries, catalog, conversations and log, pages of the chat, evaluation command.
-- The tests specific to MySQL (table swap of the flattening, escaping of `LIKE`, read-only session) are skipped on SQLite. They run when `AI_SQL_ASSISTANT_TEST_DATABASE_URL` gives a MySQL test database, whose name must end with `_test` since all of its tables are dropped.
+- The functional tests run on the engine of `AI_SQL_ASSISTANT_TEST_DATABASE_URL` when it is set, whose database must be named `*_test` since all of its tables are dropped: the swap of the flattening and the read-only session are then those of that engine.
 
 When an application installs the bundle through a Composer repository of type `path`, the suite also runs with the PHPUnit of the application: `vendor/bin/phpunit -c <path of the bundle>/phpunit.xml.dist`.
 

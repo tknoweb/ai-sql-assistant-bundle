@@ -19,7 +19,8 @@ use function Symfony\Component\DependencyInjection\Loader\Configurator\inline_se
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
 
 /**
- * Assistant answering statistics questions in natural language by writing SQL on a MySQL database, without the AI model ever seeing a stored value. See README.md for its configuration.
+ * Assistant answering statistics questions in natural language by writing SQL on a MySQL, MariaDB, PostgreSQL, SQL Server or SQLite database, without the AI model ever seeing a stored value.
+ * See README.md for its configuration.
  */
 class TknowebAiSqlAssistantBundle extends AbstractBundle
 {
@@ -42,7 +43,7 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
         $definition->rootNode()
             ->children()
                 ->scalarNode('connection')
-                    ->info('DBAL connection the queries of the model run on, logged in as a MySQL user that can read the database and write nothing')
+                    ->info('DBAL connection the queries of the model run on, logged in as a database user that can read the database and write nothing')
                     ->isRequired()
                     ->cannotBeEmpty()
                 ->end()
