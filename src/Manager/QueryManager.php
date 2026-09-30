@@ -41,6 +41,8 @@ class QueryManager
         private readonly SchemaManager $schemaManager,
         #[Autowire('%tknoweb_ai_sql_assistant.coded_columns%')]
         private readonly array $codedColumns = [],
+        #[Autowire('%tknoweb_ai_sql_assistant.max_decimals%')]
+        private readonly int $maxDecimals = 2,
     ) {
     }
 
@@ -50,6 +52,14 @@ class QueryManager
     public function getDialect(): SqlDialect
     {
         return $this->dialect ??= SqlDialect::fromPlatform($this->queryConnection->getDatabasePlatform());
+    }
+
+    /**
+     * Decimals a number of a result keeps at most.
+     */
+    public function getMaxDecimals(): int
+    {
+        return $this->maxDecimals;
     }
 
     /**
@@ -83,7 +93,7 @@ class QueryManager
                     break;
                 }
 
-                $rows[] = $row;
+                $rows[] = array_map($this->roundNumber(...), $row);
             }
 
             $result->free();
@@ -101,6 +111,36 @@ class QueryManager
             'truncated' => $truncated,
             'codedColumns' => $this->getCodedColumns($dialect->tokenize($sql), $columns),
         ];
+    }
+
+    /**
+     * A number keeps $maxDecimals decimals at most, without trailing zeros: most engines return a decimal as a string padded with zeros up to the scale of its column ("18447981.000000"),
+     * and an average with every decimal they computed ("527.9891891892"). Rounding it here gives the table, the answer sentence, the chart and the Excel file the same number. A decimal string
+     * that needs no rounding stays exact, a float being unable to hold every digit of a wide decimal column; any other value is kept as it is.
+     */
+    private function roundNumber(mixed $value): mixed
+    {
+        if (is_float($value)) {
+            $rounded = round($value, $this->maxDecimals);
+
+            // Rounding a small negative number gives a negative zero, which would be displayed as "-0"
+            return 0.0 === $rounded ? 0.0 : $rounded;
+        }
+
+        if (!is_string($value) || !preg_match('/^-?\d+\.\d+$/', $value)) {
+            return $value;
+        }
+
+        $rounded = rtrim(rtrim($value, '0'), '.');
+        $decimals = str_contains($rounded, '.') ? strlen($rounded) - strpos($rounded, '.') - 1 : 0;
+        if ($decimals > $this->maxDecimals) {
+            $rounded = number_format((float) $value, $this->maxDecimals, '.', '');
+            if (str_contains($rounded, '.')) {
+                $rounded = rtrim(rtrim($rounded, '0'), '.');
+            }
+        }
+
+        return '-0' === $rounded ? '0' : $rounded;
     }
 
     /**

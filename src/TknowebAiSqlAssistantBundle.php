@@ -124,6 +124,7 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
                 ->scalarNode('coded_values_translation_domain')->info('Translation domain of the codes of the coded columns')->defaultValue('messages')->end()
                 ->scalarNode('column_label_translation_prefix')->info('Prefix of the translation keys of the headers of the coded columns')->defaultValue('column')->end()
                 ->scalarNode('locale')->info('Locale of the labels sent to the model')->defaultValue('%kernel.default_locale%')->end()
+                ->integerNode('max_decimals')->info('Decimals a displayed number keeps at most, and the model is told to round to when decimals carry meaning')->defaultValue(2)->min(0)->end()
                 ->arrayNode('forbidden')
                     ->info('What the queries of the model must never read, on top of the conversations and their log')
                     ->addDefaultsIfNotSet()
@@ -182,7 +183,7 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
         $parameters = $container->parameters();
         $parameters->set('tknoweb_ai_sql_assistant.models', $models);
         $parameters->set('tknoweb_ai_sql_assistant.model_prices', $modelPrices);
-        foreach (['default_model', 'access_attribute', 'route_name_prefix', 'csrf_token_id', 'base_template', 'entities', 'prompt', 'coded_columns', 'coded_values_translation_domain', 'column_label_translation_prefix', 'locale', 'unflattened_json_entities'] as $key) {
+        foreach (['default_model', 'access_attribute', 'route_name_prefix', 'csrf_token_id', 'base_template', 'entities', 'prompt', 'coded_columns', 'coded_values_translation_domain', 'column_label_translation_prefix', 'locale', 'max_decimals', 'unflattened_json_entities'] as $key) {
             $parameters->set('tknoweb_ai_sql_assistant.'.$key, $config[$key]);
         }
         foreach (['entities', 'tables', 'fields', 'field_attributes'] as $key) {

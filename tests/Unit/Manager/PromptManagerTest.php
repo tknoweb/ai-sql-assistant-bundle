@@ -24,8 +24,10 @@ class PromptManagerTest extends TestCase
         $this->assertCount(2, $systemTexts);
         $instructions = trim(file_get_contents(dirname(__DIR__, 3).'/resources/prompt/instructions.md'));
         $this->assertStringContainsString('{sql_dialect}', $instructions);
-        $this->assertSame(str_replace('{sql_dialect}', 'SQL Server (Transact-SQL)', $instructions), $systemTexts[0]);
+        $this->assertStringContainsString('{max_decimals}', $instructions);
+        $this->assertSame(str_replace(['{sql_dialect}', '{max_decimals}'], ['SQL Server (Transact-SQL)', '3'], $instructions), $systemTexts[0]);
         $this->assertStringContainsString('in SQL Server (Transact-SQL) syntax', $systemTexts[0]);
+        $this->assertStringContainsString('to 3 decimals at most', $systemTexts[0]);
         $this->assertSame("<database>\n## Database tables\n\n- `store`\n</database>", $systemTexts[1]);
     }
 
@@ -42,6 +44,7 @@ class PromptManagerTest extends TestCase
     {
         $queryManager = $this->createStub(QueryManager::class);
         $queryManager->method('getDialect')->willReturn(new SqlServerDialect());
+        $queryManager->method('getMaxDecimals')->willReturn(3);
 
         return new PromptManager(new Translator('en'), $schemaManager, $queryManager, ['instructions' => $instructions, 'dictionary' => null, 'database' => null], [], 'messages', 'en');
     }

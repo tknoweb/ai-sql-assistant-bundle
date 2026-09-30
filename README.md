@@ -26,6 +26,7 @@ The `@vendor/...` line must be plain text, not inside a code block.
 - **Sources.** First the curated views the application describes, then every table of the database (the model reads their columns on demand, `describe_tables` tool), then the content of the JSON columns, flattened every night into a dedicated table (`search_document_fields` tool to find their paths).
 - **Public referentials.** When the application provides some, the model can search them for the exact spelling of a name (`search_public_referential` tool, up to 20 names in a single call, each one going through `ReferentialProviderInterface::search()`). They are the only data it reads: only put there what you accept to send to the AI provider.
 - **Formats.** The model picks the first display format from the request; the user then switches between text, table, chart and Excel without any new call.
+- **Numbers.** The model rounds what its query computes, to a whole number for a count, an amount or an average of them, to `max_decimals` decimals for a percentage, a rate or a duration. Whatever it wrote, every number of a result keeps `max_decimals` decimals at most (2 by default), without the trailing zeros of a decimal column ("18447981.000000" shows as "18447981").
 - **Codes.** A result column shows the labels of its codes, translated by their value in `coded_values_translation_domain`, when the query selects a coded column as it is, whatever its alias: a column the mapping backs with an enum or a discriminator, or one of the `coded_columns` of the views. Inside an expression (`CASE`, `CONCAT`...) it keeps its codes.
 - **Cost.** The cost of each conversation is computed from the usage returned by the API, and displayed. The system prompt is cached.
 - **History.** Each turn is logged without any value of the database (questions, SQL, costs, duration), to be reviewed and to improve the documents of the prompt. A JSON export by period is provided by `ConversationManager::getExchangesExport()`.
@@ -173,6 +174,7 @@ tknoweb_ai_sql_assistant:
     coded_values_translation_domain: messages  # translation domain of the codes
     column_label_translation_prefix: column    # header key of a coded column: columnOrderStatus
     locale: en                                 # language of the labels sent to the model
+    max_decimals: 2                            # decimals a displayed number keeps at most
     forbidden:                                 # never readable, on top of the conversations and their log
         entities: [App\Entity\ApiToken]
         tables: [messenger_messages]

@@ -347,6 +347,22 @@ class QueryManagerTest extends TestCase
         $this->assertSame(['columns' => [], 'rows' => [], 'truncated' => false, 'codedColumns' => []], $result);
     }
 
+    public function testRoundsTheNumbersAndDropsTheirTrailingZeros(): void
+    {
+        // Most engines return a decimal as a string padded up to the scale of its column, as these literals, and SQLite an average as a float
+        $sql = "SELECT '18447981.000000' AS amount, '12.500000' AS share, '527.9891891892' AS average, '-0.001' AS zero, '100.00' AS hundred, '123456789012345678.000000' AS wide, "
+            ."'v1.0' AS version, '1.' AS dot, 7 AS count_value, AVG(n) AS float_average FROM (SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 2) numbers";
+
+        $this->assertSame([[
+            'amount' => '18447981', 'share' => '12.5', 'average' => '527.99', 'zero' => '0', 'hundred' => '100', 'wide' => '123456789012345678',
+            'version' => 'v1.0', 'dot' => '1.', 'count_value' => 7, 'float_average' => 1.67,
+        ]], $this->createQueryManagerOnSqlite()->execute($sql, 10)['rows']);
+
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $queryManager = new QueryManager($connection, $this->createSchemaManager(), [], 0);
+        $this->assertSame([['average' => '528', 'hundred' => '100', 'float_average' => 2.0]], $queryManager->execute("SELECT '527.9891891892' AS average, '100.00' AS hundred, 5.0 / 3 AS float_average", 10)['rows']);
+    }
+
     public function testFindsTheColumnsHoldingCodesWhateverTheirAlias(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
