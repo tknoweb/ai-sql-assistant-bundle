@@ -45,6 +45,14 @@ class ResultManagerTest extends TestCase
             ['name' => 'Two', 'store_status' => 'Open store, Closed store'],
             ['name' => 'Three', 'store_status' => null],
         ], $rows);
+
+        // A column QueryManager found holding codes under an alias of the model, a code without any label staying as it is
+        $rows = $this->createResultManager()->getLabelledRows(['columns' => ['name', 'state'], 'codedColumns' => ['state'], 'rows' => [
+            ['name' => 'open', 'state' => 'closed'],
+            ['name' => 'Two', 'state' => 'unknown'],
+        ]]);
+
+        $this->assertSame([['name' => 'open', 'state' => 'Closed store'], ['name' => 'Two', 'state' => 'unknown']], $rows);
     }
 
     public function testDrawsOneSeriesPerValueColumn(): void

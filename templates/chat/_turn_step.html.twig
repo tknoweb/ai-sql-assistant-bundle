@@ -1,0 +1,3 @@
+{# Label of a step of a turn, as reported by AssistantManager::continueConversation() #}
+{% trans_default_domain 'TknowebAiSqlAssistant' %}
+{{- ('step.' ~ step.type)|trans({'title': step.title ?? '', 'text': step.text ?? '', 'texts': (step.texts ?? [])|join(', ')}) -}}

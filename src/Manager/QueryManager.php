@@ -7,6 +7,7 @@ use Doctrine\DBAL\Exception as DBALException;
 use Doctrine\DBAL\Exception\DriverException;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Tknoweb\AiSqlAssistantBundle\Dialect\SqlDialect;
+use Tknoweb\AiSqlAssistantBundle\Dialect\SqlToken;
 
 /**
  * Runs the SQL written by the assistant on the connection set in the "connection" configuration of the bundle, meant for a database user that can read the whole database but write nothing.
@@ -25,6 +26,12 @@ class QueryManager
     private const FORBIDDEN_KEYWORDS = ['table', 'into'];
     // Statement keywords that are also MySQL functions, INSERT(string, ...) and TRUNCATE(number, decimals), allowed when called since no statement puts a parenthesis right after them
     private const FUNCTION_KEYWORDS = ['insert', 'truncate'];
+    // Words that may follow SELECT before its first column, and the words that end its list of columns
+    private const SELECT_MODIFIERS = ['distinct', 'distinctrow', 'all', 'high_priority', 'straight_join', 'sql_small_result', 'sql_big_result', 'sql_buffer_result', 'sql_no_cache', 'sql_calc_found_rows'];
+    private const SELECT_LIST_ENDS = ['from', 'into', 'where', 'group', 'having', 'window', 'order', 'limit', 'union', 'intersect', 'except'];
+    // Words that follow a table of a FROM clause without being its alias
+    private const TABLE_REFERENCE_ENDS = ['on', 'using', 'where', 'join', 'inner', 'left', 'right', 'full', 'outer', 'cross', 'natural', 'straight_join', 'lateral', 'group', 'having', 'window', 'order',
+        'limit', 'offset', 'fetch', 'union', 'intersect', 'except', 'for', 'with'];
 
     private ?SqlDialect $dialect = null;
 
@@ -32,6 +39,8 @@ class QueryManager
         #[Autowire(service: 'tknoweb_ai_sql_assistant.query_connection')]
         private readonly Connection $queryConnection,
         private readonly SchemaManager $schemaManager,
+        #[Autowire('%tknoweb_ai_sql_assistant.coded_columns%')]
+        private readonly array $codedColumns = [],
     ) {
     }
 
@@ -44,7 +53,7 @@ class QueryManager
     }
 
     /**
-     * Run a single SELECT statement and return its column names, at most $maxRows rows, and whether rows were left out beyond that limit.
+     * Run a single SELECT statement and return its column names, at most $maxRows rows, whether rows were left out beyond that limit, and the columns holding codes (see getCodedColumns()).
      * The column names come from the first row, so they are empty when the query returns nothing.
      */
     public function execute(string $sql, int $maxRows): array
@@ -84,10 +93,257 @@ class QueryManager
             }
         }
 
+        $columns = array_keys($rows[0] ?? []);
+
         return [
-            'columns' => array_keys($rows[0] ?? []),
+            'columns' => $columns,
             'rows' => $rows,
             'truncated' => $truncated,
+            'codedColumns' => $this->getCodedColumns($dialect->tokenize($sql), $columns),
+        ];
+    }
+
+    /**
+     * Result columns holding the codes of a coded column, so that the application displays their labels, whatever the alias the model gave them: a column selected as it is, without any
+     * expression around it, from a table whose mapping backs it with an enum or a discriminator, or from another source (a view) when the "coded_columns" configuration names it. Only the columns
+     * of the main SELECT are read, the tables and aliases of the whole query telling where they come from; an alias naming two different tables leaves its columns out.
+     */
+    private function getCodedColumns(array $tokens, array $columns): array
+    {
+        if ([] === $columns) {
+            return [];
+        }
+
+        $resultColumns = array_combine(array_map('mb_strtolower', $columns), $columns);
+        $tables = array_change_key_case($this->schemaManager->getTables());
+        $codedColumnNames = array_map('mb_strtolower', array_keys($this->codedColumns));
+        $sources = $this->getTableSources($tokens);
+
+        $codedColumns = [];
+        foreach ($this->getSelectedItems($tokens) as $item) {
+            $selectedColumn = $this->readSelectedColumn($item);
+            if (null === $selectedColumn || !isset($resultColumns[$selectedColumn['name']])) {
+                continue;
+            }
+
+            // A qualified column comes from the table its qualifier names (a table without alias, or a derived table, when the qualifier is no known alias), an unqualified one from any table
+            // of the query that has it
+            $qualifier = $selectedColumn['qualifier'];
+            if (null === $qualifier) {
+                $candidateTables = array_unique(array_filter(array_values($sources)));
+            } elseif (!array_key_exists($qualifier, $sources)) {
+                $candidateTables = [$qualifier];
+            } elseif (null !== $sources[$qualifier]) {
+                $candidateTables = [$sources[$qualifier]];
+            } else {
+                continue;
+            }
+
+            $mappedCodes = [];
+            foreach ($candidateTables as $table) {
+                $mappedColumns = array_change_key_case($tables[$table]['columns'] ?? []);
+                if (isset($mappedColumns[$selectedColumn['column']])) {
+                    $mappedCodes[] = isset($mappedColumns[$selectedColumn['column']]['codes']);
+                }
+            }
+
+            $isCoded = [] !== $mappedCodes ? !in_array(false, $mappedCodes, true) : in_array($selectedColumn['column'], $codedColumnNames, true);
+            if ($isCoded) {
+                $codedColumns[] = $resultColumns[$selectedColumn['name']];
+            }
+        }
+
+        return array_values(array_unique($codedColumns));
+    }
+
+    /**
+     * Tables of the FROM and JOIN clauses of the whole query, derived tables apart, by their alias and by their own name, both in lower case: null for a name standing for two different tables.
+     */
+    private function getTableSources(array $tokens): array
+    {
+        $sources = [];
+        $addSource = function (string $name, string $table) use (&$sources): void {
+            $sources[$name] = array_key_exists($name, $sources) && $sources[$name] !== $table ? null : $table;
+        };
+
+        foreach ($tokens as $index => $token) {
+            if (!$token->isWord('from', 'join')) {
+                continue;
+            }
+
+            $position = $index + 1;
+            while (null !== ($reference = $this->readTableReference($tokens, $position))) {
+                [$table, $alias, $position] = $reference;
+                $addSource($table, $table);
+                if (null !== $alias) {
+                    $addSource($alias, $table);
+                }
+
+                // A FROM clause may list several tables separated by commas
+                if (!$token->isWord('from') || !($tokens[$position] ?? null)?->isSymbol(',')) {
+                    break;
+                }
+
+                ++$position;
+            }
+        }
+
+        return $sources;
+    }
+
+    /**
+     * Table and alias of a table reference starting at $position, and the position right after it: null for a derived table or anything else than a name. A name qualified by a schema keeps
+     * only its table.
+     */
+    private function readTableReference(array $tokens, int $position): ?array
+    {
+        if (!($tokens[$position] ?? null)?->isName()) {
+            return null;
+        }
+
+        $table = $tokens[$position]->getName();
+        ++$position;
+        while (($tokens[$position] ?? null)?->isSymbol('.') && ($tokens[$position + 1] ?? null)?->isName()) {
+            $table = $tokens[$position + 1]->getName();
+            $position += 2;
+        }
+
+        $alias = null;
+        if (($tokens[$position] ?? null)?->isWord('as') && ($tokens[$position + 1] ?? null)?->isName()) {
+            $alias = $tokens[$position + 1]->getName();
+            $position += 2;
+        } elseif (($tokens[$position] ?? null)?->isName() && !$tokens[$position]->isWord(...self::TABLE_REFERENCE_ENDS)) {
+            $alias = $tokens[$position]->getName();
+            ++$position;
+        }
+
+        return [$table, $alias, $position];
+    }
+
+    /**
+     * Tokens of each selected item of the main SELECT, the first one outside any parenthesis (after the WITH clause, whose queries are between parentheses).
+     */
+    private function getSelectedItems(array $tokens): array
+    {
+        $depth = 0;
+        $position = null;
+        foreach ($tokens as $index => $token) {
+            $depth += $token->isSymbol('(') ? 1 : ($token->isSymbol(')') ? -1 : 0);
+            if (0 === $depth && $token->isWord('select')) {
+                $position = $index + 1;
+                break;
+            }
+        }
+
+        if (null === $position) {
+            return [];
+        }
+
+        $count = count($tokens);
+        while ($position < $count && $tokens[$position]->isWord(...self::SELECT_MODIFIERS)) {
+            ++$position;
+            // DISTINCT ON (...) of PostgreSQL
+            if ($tokens[$position - 1]->isWord('distinct') && ($tokens[$position] ?? null)?->isWord('on')) {
+                $position = $this->skipParentheses($tokens, $position + 1);
+            }
+        }
+
+        // TOP 10, TOP (10), then PERCENT and WITH TIES of SQL Server
+        if (($tokens[$position] ?? null)?->isWord('top')) {
+            $position = ($tokens[$position + 1] ?? null)?->isSymbol('(') ? $this->skipParentheses($tokens, $position + 1) : $position + 2;
+            while ($position < $count && $tokens[$position]->isWord('percent', 'with', 'ties')) {
+                ++$position;
+            }
+        }
+
+        $items = [];
+        $item = [];
+        $depth = 0;
+        for (; $position < $count; ++$position) {
+            $token = $tokens[$position];
+            if (0 === $depth && ($token->isWord(...self::SELECT_LIST_ENDS) || $token->isSymbol(')'))) {
+                break;
+            }
+
+            if (0 === $depth && $token->isSymbol(',')) {
+                $items[] = $item;
+                $item = [];
+
+                continue;
+            }
+
+            $depth += $token->isSymbol('(') ? 1 : ($token->isSymbol(')') ? -1 : 0);
+            $item[] = $token;
+        }
+
+        $items[] = $item;
+
+        return $items;
+    }
+
+    /**
+     * Position right after the parenthesized group starting at $position, or $position itself when no parenthesis starts there.
+     */
+    private function skipParentheses(array $tokens, int $position): int
+    {
+        if (!($tokens[$position] ?? null)?->isSymbol('(')) {
+            return $position;
+        }
+
+        $depth = 0;
+        $count = count($tokens);
+        for (; $position < $count; ++$position) {
+            $depth += $tokens[$position]->isSymbol('(') ? 1 : ($tokens[$position]->isSymbol(')') ? -1 : 0);
+            if (0 === $depth) {
+                return $position + 1;
+            }
+        }
+
+        return $position;
+    }
+
+    /**
+     * Column a selected item reads as it is, with its qualifier (a table or its alias) and the name of its result column, all in lower case: null for any expression.
+     */
+    private function readSelectedColumn(array $item): ?array
+    {
+        // The alias comes last, after AS, or right after the column
+        $alias = null;
+        $count = count($item);
+        if ($count >= 3 && $item[$count - 2]->isWord('as')) {
+            $alias = $item[$count - 1];
+            $item = array_slice($item, 0, $count - 2);
+        } elseif ($count >= 2 && $item[$count - 2]->isName()) {
+            $alias = $item[$count - 1];
+            $item = array_slice($item, 0, $count - 1);
+        }
+
+        if (null !== $alias && !$alias->isName() && SqlToken::STRING !== $alias->type) {
+            return null;
+        }
+
+        // A column, a table and its column, or a schema, a table and its column
+        $names = [];
+        foreach ($item as $index => $token) {
+            if (0 === $index % 2 ? !$token->isName() : !$token->isSymbol('.')) {
+                return null;
+            }
+
+            if (0 === $index % 2) {
+                $names[] = $token->getName();
+            }
+        }
+
+        if ([] === $names || count($names) > 3 || 0 === count($item) % 2) {
+            return null;
+        }
+
+        $column = array_pop($names);
+
+        return [
+            'column' => $column,
+            'qualifier' => [] !== $names ? array_pop($names) : null,
+            'name' => null !== $alias ? mb_strtolower($alias->text) : $column,
         ];
     }
 

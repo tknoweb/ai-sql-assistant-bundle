@@ -57,13 +57,16 @@ class ResultManager
     }
 
     /**
-     * Rows of a result with the codes of the coded columns replaced by their label. A comma separated list of codes is labelled code by code.
+     * Rows of a result with the codes of the coded columns replaced by their label: the columns the configuration names, and the ones QueryManager found holding codes whatever their alias.
+     * A comma separated list of codes is labelled code by code, and a code without any label stays as it is.
      */
     public function getLabelledRows(array $result): array
     {
-        return array_map(function (array $row) {
+        $codedColumns = array_fill_keys($result['codedColumns'] ?? [], true) + $this->codedColumns;
+
+        return array_map(function (array $row) use ($codedColumns) {
             foreach ($row as $column => $value) {
-                if (null !== $value && isset($this->codedColumns[$column])) {
+                if (null !== $value && isset($codedColumns[$column])) {
                     $row[$column] = implode(', ', array_map(fn (string $code) => $this->translator->trans(trim($code), domain: $this->codedValuesTranslationDomain), explode(',', (string) $value)));
                 }
             }

@@ -51,6 +51,18 @@ abstract class AbstractConversation implements ConversationInterface
     #[ORM\Column]
     protected float $cost = 0.0;
 
+    // Message of the user whose turn has not ended (see ConversationManager::getTurnState()), null between two turns
+    #[ORM\Column(type: 'text', nullable: true)]
+    protected ?string $pendingInput = null;
+
+    // When a request started running the pending turn, null while it waits for one
+    #[ORM\Column(nullable: true)]
+    protected ?\DateTimeImmutable $turnStartedAt = null;
+
+    // Steps the pending turn went through, as reported by AssistantManager::continueConversation(), for the display only
+    #[ORM\Column(type: 'json', nullable: true)]
+    protected ?array $turnSteps = null;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -124,6 +136,53 @@ abstract class AbstractConversation implements ConversationInterface
         $this->cacheCreationInputTokens += $usage['cacheCreationInputTokens'];
         $this->cacheReadInputTokens += $usage['cacheReadInputTokens'];
         $this->cost += $usage['cost'];
+
+        return $this;
+    }
+
+    public function getPendingInput(): ?string
+    {
+        return $this->pendingInput;
+    }
+
+    public function getTurnStartedAt(): ?\DateTimeImmutable
+    {
+        return $this->turnStartedAt;
+    }
+
+    public function getTurnSteps(): array
+    {
+        return $this->turnSteps ?? [];
+    }
+
+    public function requestTurn(string $userInput): static
+    {
+        $this->pendingInput = $userInput;
+        $this->turnStartedAt = null;
+        $this->turnSteps = null;
+
+        return $this;
+    }
+
+    public function startTurn(): static
+    {
+        $this->turnStartedAt = new \DateTimeImmutable();
+
+        return $this;
+    }
+
+    public function addTurnStep(array $step): static
+    {
+        $this->turnSteps = [...$this->getTurnSteps(), $step];
+
+        return $this;
+    }
+
+    public function endTurn(): static
+    {
+        $this->pendingInput = null;
+        $this->turnStartedAt = null;
+        $this->turnSteps = null;
 
         return $this;
     }

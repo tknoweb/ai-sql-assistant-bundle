@@ -3,24 +3,32 @@ conversations: Mes conversations
 newConversation: Nouvelle conversation
 noConversation: Aucune conversation pour le moment
 intro: "Posez votre question comme à un collègue. L'assistant la traduit en requête sur la base, vous pose des questions de précision si besoin, puis affiche le résultat en texte, en tableau, en graphique ou en fichier Excel. Relisez toujours la phrase qui accompagne le résultat : elle dit exactement ce qui a été compté."
-privacy: "Vos questions sont transmises au fournisseur d'IA, mais les données de la base ne lui sont pas communiquées."
+privacy: "L'IA peut faire des erreurs. Vos questions sont transmises à l'IA, mais les données ne lui sont pas communiquées."
 question: Votre question
 questionPlaceholder: "Par exemple : combien de commandes en 2025 ?"
 ask: Poser la question
 send: Envoyer
-thinking: L'assistant réfléchit…
 messagePlaceholder: Nouvelle demande ou précision…
 answerPlaceholder: Choisissez une réponse ci-dessus ou écrivez la vôtre…
 costValue: "{cost} $"
 conversationCost: "Coût : {cost} $"
-questionCounter: "Questions pour cette demande : {count}/{max}"
-questionCounterHelp: "Au-delà de {max} questions pour une même demande, l'assistant applique les règles par défaut du dictionnaire et les annonce dans sa réponse."
+questionCounter: "Échanges pour cette demande : {count}/{max}"
+questionCounterHelp: "Par sécurité, au-delà de {max} échanges pour une même demande, l'assistant applique les règles par défaut du dictionnaire et les annonce dans sa réponse."
 rename: Renommer
 conversationTitle: Titre de la conversation
 archive: Archiver
 archiveConfirmation: "Archiver cette conversation ? Elle n'apparaîtra plus dans votre historique."
 conversationArchived: La conversation a été archivée.
-error: "L'assistant n'a pas pu répondre. Votre message n'a pas été enregistré, réessayez dans quelques instants."
+error: "L'assistant n'a pas pu répondre. Votre message n'a pas été enregistré : il est repris ci-dessous, renvoyez-le dans quelques instants."
+turnInProgress: L'assistant traite encore votre message précédent.
+elapsed: "{seconds} s"
+step:
+  thinking: Réfléchit…
+  correctingQuery: Corrige sa requête…
+  describingTables: Consulte la structure des tables…
+  searchingReferential: "Cherche « {texts} » dans les référentiels…"
+  searchingDocumentFields: "Cherche « {text} » dans les champs des documents…"
+  runningQuery: "Exécute la requête « {title} »…"
 refusal: "L'assistant a refusé de traiter cette demande. Reformulez-la, ou contactez l'administrateur si le problème persiste."
 interrupted: "L'assistant s'est arrêté avant la fin. Relancez votre demande, en la précisant si possible."
 showQuery: Voir la requête SQL

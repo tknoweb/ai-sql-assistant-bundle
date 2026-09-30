@@ -1,0 +1,9 @@
+{# Turn frame of the conversation page, reloaded by the "ai-sql-assistant" controller while the turn waits or runs (ChatController::progress()). Once the turn is over, whether it ended
+   or failed, it only holds the mark telling the page to reload the conversation #}
+<turbo-frame id="ai-sql-assistant-turn">
+    {% if turnState is not null %}
+        {{ include('@TknowebAiSqlAssistant/chat/_turn.html.twig') }}
+    {% else %}
+        <div data-ai-sql-assistant-turn-over></div>
+    {% endif %}
+</turbo-frame>

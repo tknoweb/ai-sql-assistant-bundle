@@ -32,6 +32,14 @@ class AssistantManager
     public const EVENT_REFUSAL = 'refusal';
     public const EVENT_INTERRUPTED = 'interrupted';
 
+    // Steps of a turn reported while it runs, for the display only: the model thinking, correcting its failed query, or waiting for one of its tools
+    public const STEP_THINKING = 'thinking';
+    public const STEP_CORRECTING_QUERY = 'correctingQuery';
+    public const STEP_DESCRIBING_TABLES = 'describingTables';
+    public const STEP_SEARCHING_REFERENTIAL = 'searchingReferential';
+    public const STEP_SEARCHING_DOCUMENT_FIELDS = 'searchingDocumentFields';
+    public const STEP_RUNNING_QUERY = 'runningQuery';
+
     // Formats a query result can be shown in. The model picks the first one from the request, the user can then switch to any other one available for that result.
     public const OUTPUT_TEXT = 'text';
     public const OUTPUT_TABLE = 'table';
@@ -45,7 +53,7 @@ class AssistantManager
     public const ANSWER_VALUE_PLACEHOLDER = '{value}';
 
     // Rows of a query result kept for the display, the Excel export being meant to run the query again without this limit
-    public const MAX_DISPLAYED_ROWS = 500;
+    public const MAX_DISPLAYED_ROWS = 100;
 
     // Questions the model may ask for a single request, the user answers not counting as new requests
     public const MAX_QUESTIONS_PER_REQUEST = 10;
@@ -60,6 +68,10 @@ class AssistantManager
     private const QUERY_SUCCESS_RESULT = 'The query ran successfully. Its result is displayed to the user, you cannot see it.';
     private const INTERRUPTED_TOOL_RESULT = 'This tool call was not run, the turn was interrupted before it.';
     private const QUESTION_LIMIT_TOOL_RESULT = 'The question limit of this request is reached, this question was not asked: apply the default rules of the dictionary to the notions left, state them in the interpretation, and run the query.';
+    private const MISSING_DESCRIPTION_TOOL_RESULT = 'The query was not run: it needs a title, and an interpretation of at least one full sentence, in the language of the user, stating exactly what it counts or lists: period, scope and every rule applied. Call run_query again with them.';
+
+    // Shortest interpretation taken for the sentence the user reads to check what a query counts: anything shorter is a placeholder ("test"...), not a statement of its period, scope and rules
+    private const MIN_INTERPRETATION_LENGTH = 30;
 
     public function __construct(
         #[Autowire(service: 'tknoweb_ai_sql_assistant.provider_locator')]
@@ -104,10 +116,14 @@ class AssistantManager
      * answer to that question. The model must stay the same for the whole conversation, since switching it would invalidate the prompt cache.
      * The returned array holds the updated history, the events of the turn in their order (texts, question, queries with their result) for the display, and the usage of the turn: the models
      * that answered, the tokens used and their cost in dollars. Each model message of the history records the provider that wrote it, which is the only one able to read it back.
+     * $onProgress receives each step of the turn as it starts, before each call to the model and each tool, so that the user can follow a turn that takes a while: its STEP_* "type", plus
+     * the "title" of a query or the "texts" (a single "text" for the document fields) searched.
      */
-    public function continueConversation(array $history, string $modelKey, string $userInput): array
+    public function continueConversation(array $history, string $modelKey, string $userInput, ?\Closure $onProgress = null): array
     {
         $model = $this->models[$modelKey] ?? throw new \InvalidArgumentException(sprintf('Unknown assistant model "%s".', $modelKey));
+        $onProgress ??= static function (array $step): void {
+        };
 
         $pendingQuestion = $this->getLastToolUse($history);
         $history[] = [
@@ -121,7 +137,9 @@ class AssistantManager
         $usage = ['models' => [], 'inputTokens' => 0, 'outputTokens' => 0, 'cacheCreationInputTokens' => 0, 'cacheReadInputTokens' => 0, 'cost' => 0.0];
 
         $provider = $this->getProvider($model['provider']);
+        $step = ['type' => self::STEP_THINKING];
         for ($callCount = 1;; ++$callCount) {
+            $onProgress($step);
             $message = $provider->createMessage($model['id'], $this->promptManager->getSystemTexts(), $history, $this->getToolDefinitions(), self::MAX_TOKENS);
             $history[] = ['role' => 'assistant', 'provider' => $model['provider'], 'message' => $message->raw];
             $this->addUsage($usage, $message, $model['id']);
@@ -156,14 +174,18 @@ class AssistantManager
                 break;
             }
 
-            [$toolResult, $event] = self::TOOL_ASK_USER === $toolUse->name
-                ? [$this->getToolResult($toolUse->id, self::QUESTION_LIMIT_TOOL_RESULT, true), null]
-                : $this->runTool($toolUse);
+            if (self::TOOL_ASK_USER === $toolUse->name) {
+                [$toolResult, $event] = [$this->getToolResult($toolUse->id, self::QUESTION_LIMIT_TOOL_RESULT, true), null];
+            } else {
+                $onProgress($this->getToolStep($toolUse));
+                [$toolResult, $event] = $this->runTool($toolUse);
+            }
             if (null !== $event) {
                 $events[] = $event;
             }
 
             $history[] = ['role' => 'user', 'content' => [$toolResult]];
+            $step = ['type' => self::TOOL_RUN_QUERY === $toolUse->name && ($toolResult['isError'] ?? false) ? self::STEP_CORRECTING_QUERY : self::STEP_THINKING];
         }
 
         $this->closeUnansweredToolUse($history);
@@ -230,8 +252,8 @@ class AssistantManager
                         $events[] = [
                             'type' => self::EVENT_QUERY,
                             'toolUseId' => $toolCall->id,
-                            'title' => (string) ($toolCall->input['title'] ?? ''),
-                            'interpretation' => (string) ($toolCall->input['interpretation'] ?? ''),
+                            'title' => $this->getDisplayText($toolCall->input['title'] ?? ''),
+                            'interpretation' => $this->getDisplayText($toolCall->input['interpretation'] ?? ''),
                             'sql' => (string) ($toolCall->input['sql'] ?? ''),
                             'error' => null,
                         ];
@@ -262,6 +284,9 @@ class AssistantManager
                     $events[] = ['type' => self::EVENT_INTERRUPTED];
                 } elseif (self::QUESTION_LIMIT_TOOL_RESULT === $toolResult['content']) {
                     // A question refused for exceeding the cap was never shown to the user
+                    $events = $this->removeToolCallEvent($events, $toolResult['toolUseID']);
+                } elseif (self::MISSING_DESCRIPTION_TOOL_RESULT === $toolResult['content']) {
+                    // A query sent back for its missing title or interpretation was never run nor shown to the user
                     $events = $this->removeToolCallEvent($events, $toolResult['toolUseID']);
                 } elseif (self::TOOL_ASK_USER === $toolName) {
                     $events[] = ['type' => self::EVENT_USER_MESSAGE, 'text' => $toolResult['content']];
@@ -370,9 +395,25 @@ class AssistantManager
         return [
             'type' => self::EVENT_QUESTION,
             'toolUseId' => $toolUse->id,
-            'question' => (string) ($toolUse->input['question'] ?? ''),
-            'options' => array_values(array_map('strval', (array) ($toolUse->input['options'] ?? []))),
+            'question' => $this->getDisplayText($toolUse->input['question'] ?? ''),
+            'options' => array_values(array_map(fn (mixed $option) => $this->getDisplayText($option), (array) ($toolUse->input['options'] ?? []))),
         ];
+    }
+
+    /**
+     * A text of a tool argument as the user reads it. A model sometimes writes an accent of an argument as an escape sequence ("Année"), which is decoded, or garbles it into a
+     * control character, which is removed, the character it stood for being unknown. The history keeps the argument as the model wrote it, since it is sent back as it is.
+     */
+    private function getDisplayText(mixed $text): string
+    {
+        $text = preg_replace_callback(
+            '/\\\\u[0-9a-fA-F]{4}(?:\\\\u[0-9a-fA-F]{4})?/',
+            // A pair of escapes may be the two halves of a character beyond the basic plane; a sequence that decodes to nothing valid stays as it was
+            fn (array $matches) => json_decode('"'.$matches[0].'"') ?? $matches[0],
+            (string) $text
+        );
+
+        return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
     }
 
     private function getProvider(string $name): ModelProviderInterface
@@ -424,6 +465,20 @@ class AssistantManager
     }
 
     /**
+     * Step of a turn a tool call stands for, with what the user may read of its input: the title of a query, or the texts searched. An unknown tool, refused at once, shows as thinking.
+     */
+    private function getToolStep(ToolCall $toolUse): array
+    {
+        return match ($toolUse->name) {
+            self::TOOL_RUN_QUERY => ['type' => self::STEP_RUNNING_QUERY, 'title' => $this->getDisplayText($toolUse->input['title'] ?? '')],
+            self::TOOL_SEARCH_PUBLIC_REFERENTIAL => ['type' => self::STEP_SEARCHING_REFERENTIAL, 'texts' => array_values(array_map(fn (mixed $text) => $this->getDisplayText($text), (array) ($toolUse->input['texts'] ?? [])))],
+            self::TOOL_DESCRIBE_TABLES => ['type' => self::STEP_DESCRIBING_TABLES],
+            self::TOOL_SEARCH_DOCUMENT_FIELDS => ['type' => self::STEP_SEARCHING_DOCUMENT_FIELDS, 'text' => $this->getDisplayText($toolUse->input['text'] ?? '')],
+            default => ['type' => self::STEP_THINKING],
+        };
+    }
+
+    /**
      * Run a tool call of the model, other than ask_user, and return its result for the model along with the event to display, if any.
      */
     private function runTool(ToolCall $toolUse): array
@@ -441,6 +496,13 @@ class AssistantManager
 
     private function runQuery(string $toolUseId, array $input): array
     {
+        // The interpretation is how the user checks what was counted: a query without a real one goes back to the model to be described, without being run nor shown
+        $title = trim((string) ($input['title'] ?? ''));
+        $interpretation = trim((string) ($input['interpretation'] ?? ''));
+        if ('' === $title || mb_strlen($interpretation) < self::MIN_INTERPRETATION_LENGTH) {
+            return [$this->getToolResult($toolUseId, self::MISSING_DESCRIPTION_TOOL_RESULT, true), null];
+        }
+
         $event = $this->getQueryEvent($input, self::MAX_DISPLAYED_ROWS) + ['toolUseId' => $toolUseId];
         if (null !== $event['error']) {
             // Only the error message goes back to the model, QueryManager having reduced to its code any message of the database that could quote a stored value
@@ -457,8 +519,8 @@ class AssistantManager
     {
         $event = [
             'type' => self::EVENT_QUERY,
-            'title' => (string) ($input['title'] ?? ''),
-            'interpretation' => (string) ($input['interpretation'] ?? ''),
+            'title' => $this->getDisplayText($input['title'] ?? ''),
+            'interpretation' => $this->getDisplayText($input['interpretation'] ?? ''),
             'sql' => (string) ($input['sql'] ?? ''),
             'result' => null,
             'error' => null,
@@ -496,7 +558,7 @@ class AssistantManager
             return null;
         }
 
-        return str_replace(self::ANSWER_VALUE_PLACEHOLDER, (string) $value, $answerTemplate);
+        return str_replace(self::ANSWER_VALUE_PLACEHOLDER, (string) $value, $this->getDisplayText($answerTemplate));
     }
 
     /**
@@ -566,8 +628,10 @@ class AssistantManager
 
     private function searchDocumentFields(string $toolUseId, array $input): array
     {
+        $filters = array_map(fn (mixed $filter) => is_string($filter) && '' !== trim($filter) ? trim($filter) : null, [$input['document_type'] ?? null, $input['template'] ?? null]);
+
         try {
-            $result = $this->catalogManager->search((string) ($input['text'] ?? ''));
+            $result = $this->catalogManager->search((string) ($input['text'] ?? ''), ...$filters);
         } catch (\InvalidArgumentException $exception) {
             return [$this->getToolResult($toolUseId, $exception->getMessage(), true), null];
         }
@@ -708,14 +772,16 @@ class AssistantManager
             ],
             [
                 'name' => self::TOOL_SEARCH_DOCUMENT_FIELDS,
-                'description' => 'Search the catalog of the fields of the JSON contents flattened in '.$jsonValueTable.' (forms typed online, stored API payloads...) by words of their path or of their label in the forms. The paths matching the most words come first, grouped by kind of document and template version (8 paths at most per group), followed by the labels of their keys: filter '.$jsonValueTable.'.generic_path on them. At most 25 paths are returned: search again with more precise words, e.g. words of a path found, when the result or a group is truncated.',
+                'description' => 'Search the catalog of the fields of the JSON contents flattened in '.$jsonValueTable.' (forms typed online, stored API payloads...) by words of their path or of their label in the forms. The paths matching the most words come first, grouped by kind of document and template version (8 paths at most per group), each group with the labels of its keys in that version, the beginning its labels share being given once as label_prefix: filter '.$jsonValueTable.'.generic_path on them. At most 25 paths are returned, the latest versions first: give document_type and template to search a single kind of document or version (the version the documents of the period asked for were typed in, for instance), and search again with more precise words, e.g. words of a path found, when the result or a group is truncated.',
                 'strict' => true,
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
                         'text' => ['type' => 'string', 'description' => 'One to five words to look for in the paths and their labels, e.g. "median price".'],
+                        'document_type' => ['anyOf' => [['type' => 'string'], ['type' => 'null']], 'description' => 'Only the paths of this kind of document, as a previous search gave it. Null for every kind.'],
+                        'template' => ['anyOf' => [['type' => 'string'], ['type' => 'null']], 'description' => 'Only the paths of this template version, as a previous search gave it. Null for every version.'],
                     ],
-                    'required' => ['text'],
+                    'required' => ['text', 'document_type', 'template'],
                     'additionalProperties' => false,
                 ],
             ],

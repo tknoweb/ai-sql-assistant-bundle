@@ -15,6 +15,7 @@ use Doctrine\DBAL\Platforms\SQLServerPlatform;
 use PHPUnit\Framework\TestCase;
 use Tknoweb\AiSqlAssistantBundle\Manager\QueryManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\SchemaManager;
+use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\StoreStatus;
 
 /**
  * The checks of the queries of the model, and the filtering of the errors of the database sent back to it: the two barriers between the model and the stored values, on each engine.
@@ -321,7 +322,7 @@ class QueryManagerTest extends TestCase
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         $connection->executeStatement('CREATE TABLE store (name VARCHAR(20))');
 
-        $this->assertSame(['columns' => [], 'rows' => [], 'truncated' => false], (new QueryManager($connection, $this->createSchemaManager()))->execute('SELECT name FROM store', 10));
+        $this->assertSame(['columns' => [], 'rows' => [], 'truncated' => false, 'codedColumns' => []], (new QueryManager($connection, $this->createSchemaManager()))->execute('SELECT name FROM store', 10));
         $this->assertFalse($connection->isTransactionActive());
 
         $this->expectException(DBALException::class);
@@ -343,7 +344,43 @@ class QueryManagerTest extends TestCase
         $this->assertFalse($result['truncated']);
 
         $result = $queryManager->execute('SELECT n FROM (SELECT 1 AS n) numbers WHERE n > 1', 10);
-        $this->assertSame(['columns' => [], 'rows' => [], 'truncated' => false], $result);
+        $this->assertSame(['columns' => [], 'rows' => [], 'truncated' => false, 'codedColumns' => []], $result);
+    }
+
+    public function testFindsTheColumnsHoldingCodesWhateverTheirAlias(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement('CREATE TABLE person (id INTEGER, name VARCHAR(20), profession VARCHAR(20), status VARCHAR(20))');
+        $connection->executeStatement('CREATE TABLE shop (id INTEGER, person_id INTEGER, status VARCHAR(20))');
+        $connection->executeStatement('CREATE VIEW shop_view AS SELECT id, status AS shop_status FROM shop');
+        $connection->executeStatement("INSERT INTO person (id, name, profession, status) VALUES (1, 'Ann', 'academic', 'active')");
+        $connection->executeStatement("INSERT INTO shop (id, person_id, status) VALUES (1, 1, 'open')");
+
+        // The mapping backs person.profession and shop.status with codes, not person.status; the configuration names the coded column of the view
+        $schemaManager = $this->createStub(SchemaManager::class);
+        $schemaManager->method('getForbiddenNames')->willReturn(self::FORBIDDEN_NAMES);
+        $schemaManager->method('getTables')->willReturn([
+            'person' => ['columns' => ['id' => ['type' => 'integer'], 'name' => ['type' => 'string'], 'profession' => ['type' => 'string', 'codes' => ['academic', 'business']], 'status' => ['type' => 'string']]],
+            'shop' => ['columns' => ['id' => ['type' => 'integer'], 'person_id' => ['type' => 'integer'], 'status' => ['type' => 'string', 'codes' => ['open', 'closed']]]],
+        ]);
+        $queryManager = new QueryManager($connection, $schemaManager, ['shop_status' => StoreStatus::class]);
+
+        $expectedCodedColumns = [
+            'SELECT p.name AS nom, p.profession AS metier FROM person p' => ['metier'],
+            'SELECT name, profession FROM person' => ['profession'],
+            'SELECT DISTINCT person.profession metier FROM main.person' => ['metier'],
+            'SELECT p.status AS person_status, s.status AS shop_state FROM person AS p JOIN shop s ON s.person_id = p.id' => ['shop_state'],
+            'SELECT p.name, s.status FROM person p, shop s WHERE s.person_id = p.id' => ['status'],
+            'SELECT v.shop_status AS state FROM shop_view v' => ['state'],
+            // An expression, a derived table and an alias standing for two tables leave the column out
+            "SELECT UPPER(p.profession) AS metier, CASE WHEN p.profession = 'academic' THEN 1 ELSE 0 END AS academic FROM person p" => [],
+            'WITH people AS (SELECT profession FROM person) SELECT people.profession AS metier FROM people' => [],
+            'SELECT x.profession AS metier FROM person x WHERE x.id IN (SELECT x.person_id FROM shop x)' => [],
+        ];
+
+        foreach ($expectedCodedColumns as $sql => $codedColumns) {
+            $this->assertSame($codedColumns, $queryManager->execute($sql, 10)['codedColumns'], $sql);
+        }
     }
 
     public function testPassesOnTheErrorsQuotingOnlyTheQueryOrTheSchema(): void

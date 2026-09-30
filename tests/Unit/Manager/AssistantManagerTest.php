@@ -173,18 +173,26 @@ class AssistantManagerTest extends AssistantManagerTestCase
 
     public function testSearchesTheDocumentFields(): void
     {
-        $this->catalogManager->method('search')->willReturnCallback(fn (string $text) => 'x' === $text
-            ? throw new \InvalidArgumentException('The searched text must hold at least one word of two characters.') : ['results' => [['source' => 'document.content', 'generic_paths' => ['price']]], 'labels' => [], 'truncated' => false]);
+        $searches = [];
+        $this->catalogManager->method('search')->willReturnCallback(function (string $text, ?string $documentType = null, ?string $template = null) use (&$searches): array {
+            $searches[] = [$text, $documentType, $template];
+
+            return 'x' === $text
+                ? throw new \InvalidArgumentException('The searched text must hold at least one word of two characters.') : ['results' => [['source' => 'document.content', 'generic_paths' => ['price'], 'labels' => ['price' => 'Price']]], 'truncated' => false];
+        });
         $this->provider->queue(
-            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_SEARCH_DOCUMENT_FIELDS, ['text' => 'price']),
-            ScriptedModelProvider::toolCall('toolu_2', AssistantManager::TOOL_SEARCH_DOCUMENT_FIELDS, ['text' => 'x']),
+            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_SEARCH_DOCUMENT_FIELDS, ['text' => 'price', 'document_type' => null, 'template' => null]),
+            ScriptedModelProvider::toolCall('toolu_2', AssistantManager::TOOL_SEARCH_DOCUMENT_FIELDS, ['text' => 'x', 'document_type' => null, 'template' => null]),
+            ScriptedModelProvider::toolCall('toolu_3', AssistantManager::TOOL_SEARCH_DOCUMENT_FIELDS, ['text' => 'price', 'document_type' => 'form', 'template' => ' v2 ']),
             ScriptedModelProvider::text('Done'),
         );
 
         $history = $this->createAssistantManager()->continueConversation([], self::MODEL_KEY, 'Median price?')['history'];
 
-        $this->assertSame('{"results":[{"source":"document.content","generic_paths":["price"]}],"labels":[],"truncated":false}', $history[2]['content'][0]['content']);
+        $this->assertSame('{"results":[{"source":"document.content","generic_paths":["price"],"labels":{"price":"Price"}}],"truncated":false}', $history[2]['content'][0]['content']);
         $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_2', 'content' => 'The searched text must hold at least one word of two characters.', 'isError' => true]], $history[4]['content']);
+        // The kind of document and the template version restrict the search when given
+        $this->assertSame([['price', null, null], ['x', null, null], ['price', 'form', 'v2']], $searches);
     }
 
     public function testReportsAnUnknownToolToTheModel(): void
@@ -207,6 +215,107 @@ class AssistantManagerTest extends AssistantManagerTestCase
         $this->assertSame("Unknown column 'nme'", $turn['events'][0]['error']);
         $this->assertNull($turn['events'][0]['result']);
         $this->assertNull($turn['events'][0]['output']);
+    }
+
+    public function testShowsTheToolArgumentsWithoutEscapedAccentsNorControlCharacters(): void
+    {
+        $this->queryManager->method('execute')->willReturn(['columns' => ['n'], 'rows' => [['n' => 3]], 'truncated' => false]);
+        $assistantManager = $this->createAssistantManager();
+        $this->provider->queue(ScriptedModelProvider::question('toolu_q', 'Quelle année ?', ['Année civile', "Donn\x08es certifi\x08es", 'Emoji 😀']));
+
+        $turn = $assistantManager->continueConversation([], self::MODEL_KEY, 'Combien de magasins ?');
+
+        $this->assertSame('Quelle année ?', $turn['events'][0]['question']);
+        $this->assertSame(['Année civile', 'Donnes certifies', 'Emoji 😀'], $turn['events'][0]['options']);
+        // The history keeps the arguments as the model wrote them, since it is sent back as it is
+        $this->assertSame('Quelle année ?', $turn['history'][1]['message']['toolCall']['input']['question']);
+
+        $this->provider->queue(
+            ScriptedModelProvider::query('toolu_1', 'SELECT COUNT(*) AS n FROM store', [
+                'title' => 'Magasins de l’année',
+                'interpretation' => 'J\'ai compté les magasins ouverts cette année.',
+                'output' => 'text',
+                'answer_template' => 'Il y a {value} magasins ouverts cette année.',
+            ]),
+            ScriptedModelProvider::text('Autre chose ?'),
+        );
+        $turn = $assistantManager->continueConversation($turn['history'], self::MODEL_KEY, 'Année civile');
+
+        $this->assertSame('Magasins de l’année', $turn['events'][0]['title']);
+        $this->assertSame('J\'ai compté les magasins ouverts cette année.', $turn['events'][0]['interpretation']);
+        $this->assertSame('Il y a 3 magasins ouverts cette année.', $turn['events'][0]['answer']);
+
+        $timeline = $assistantManager->getTimeline($turn['history']);
+        $this->assertSame(['Année civile', 'Donnes certifies', 'Emoji 😀'], $timeline[1]['options']);
+        $this->assertSame('Magasins de l’année', $timeline[3]['title']);
+    }
+
+    public function testSendsAQueryWithoutARealDescriptionBackToTheModelWithoutRunningIt(): void
+    {
+        $this->queryManager = $this->createMock(QueryManager::class);
+        $this->queryManager->expects($this->once())->method('execute')
+            ->with('SELECT COUNT(*) AS n FROM store', AssistantManager::MAX_DISPLAYED_ROWS)
+            ->willReturn(['columns' => ['n'], 'rows' => [['n' => 3]], 'truncated' => false]);
+        $assistantManager = $this->createAssistantManager();
+        $this->provider->queue(
+            ScriptedModelProvider::query('toolu_placeholder', 'SELECT COUNT(*) AS n FROM store', ['title' => 'test', 'interpretation' => 'test']),
+            ScriptedModelProvider::query('toolu_untitled', 'SELECT COUNT(*) AS n FROM store', ['title' => ' ']),
+            ScriptedModelProvider::query('toolu_described', 'SELECT COUNT(*) AS n FROM store', ['title' => 'Stores', 'interpretation' => 'I counted the stores open today.']),
+            ScriptedModelProvider::text('Anything else?'),
+        );
+
+        $steps = [];
+        $turn = $assistantManager->continueConversation([], self::MODEL_KEY, 'How many stores?', function (array $step) use (&$steps): void {
+            $steps[] = $step;
+        });
+
+        foreach ([2 => 'toolu_placeholder', 4 => 'toolu_untitled'] as $index => $toolUseId) {
+            $toolResult = $turn['history'][$index]['content'][0];
+            $this->assertSame($toolUseId, $toolResult['toolUseID']);
+            $this->assertTrue($toolResult['isError']);
+            $this->assertStringContainsString('The query was not run', $toolResult['content']);
+        }
+        $this->assertContains(['type' => AssistantManager::STEP_CORRECTING_QUERY], $steps);
+
+        // Only the described query was run and shown, during the turn as well as in the stored timeline
+        $isQuery = fn (array $event) => AssistantManager::EVENT_QUERY === $event['type'];
+        $this->assertSame(['toolu_described'], array_column(array_filter($turn['events'], $isQuery), 'toolUseId'));
+        $this->assertSame(['toolu_described'], array_column(array_filter($assistantManager->getTimeline($turn['history']), $isQuery), 'toolUseId'));
+    }
+
+    public function testReportsEachStepOfTheTurnAsItStarts(): void
+    {
+        $this->queryManager->method('execute')->willReturnCallback(fn (string $sql) => 'SELECT nme FROM store' === $sql
+            ? throw new \InvalidArgumentException("Unknown column 'nme'") : ['columns' => ['name'], 'rows' => [], 'truncated' => false]);
+        $this->schemaManager->method('describeTables')->willReturn('## store');
+        $this->catalogManager->method('search')->willReturn(['results' => [], 'truncated' => false]);
+        $this->provider->queue(
+            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_DESCRIBE_TABLES, ['tables' => ['store']]),
+            ScriptedModelProvider::toolCall('toolu_2', AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL, ['referential' => 'city', 'texts' => ['Lyon', 'Paris']]),
+            ScriptedModelProvider::toolCall('toolu_3', AssistantManager::TOOL_SEARCH_DOCUMENT_FIELDS, ['text' => 'price']),
+            ScriptedModelProvider::query('toolu_4', 'SELECT nme FROM store', ['title' => 'Stores']),
+            ScriptedModelProvider::query('toolu_5', 'SELECT name FROM store', ['title' => 'Stores']),
+            ScriptedModelProvider::text('Here they are.'),
+        );
+
+        $steps = [];
+        $this->createAssistantManager(new PublicReferentialProvider())->continueConversation([], self::MODEL_KEY, 'Stores of Lyon and Paris?', function (array $step) use (&$steps): void {
+            $steps[] = $step;
+        });
+
+        $this->assertSame([
+            ['type' => AssistantManager::STEP_THINKING],
+            ['type' => AssistantManager::STEP_DESCRIBING_TABLES],
+            ['type' => AssistantManager::STEP_THINKING],
+            ['type' => AssistantManager::STEP_SEARCHING_REFERENTIAL, 'texts' => ['Lyon', 'Paris']],
+            ['type' => AssistantManager::STEP_THINKING],
+            ['type' => AssistantManager::STEP_SEARCHING_DOCUMENT_FIELDS, 'text' => 'price'],
+            ['type' => AssistantManager::STEP_THINKING],
+            ['type' => AssistantManager::STEP_RUNNING_QUERY, 'title' => 'Stores'],
+            ['type' => AssistantManager::STEP_CORRECTING_QUERY],
+            ['type' => AssistantManager::STEP_RUNNING_QUERY, 'title' => 'Stores'],
+            ['type' => AssistantManager::STEP_THINKING],
+        ], $steps);
     }
 
     public function testAsksAQuestionAndTakesTheNextInputAsItsAnswer(): void
@@ -434,7 +543,7 @@ class AssistantManagerTest extends AssistantManagerTestCase
         $history = $assistantManager->continueConversation([], self::MODEL_KEY, 'How many stores?')['history'];
         $this->provider->queue(
             ScriptedModelProvider::query('toolu_bad', 'SELECT nme FROM store', ['title' => 'Bad']),
-            ScriptedModelProvider::query('toolu_good', 'SELECT COUNT(*) AS n FROM store', ['title' => 'Stores', 'interpretation' => 'I counted the stores of 2025.']),
+            ScriptedModelProvider::query('toolu_good', 'SELECT COUNT(*) AS n FROM store', ['title' => 'Stores', 'interpretation' => 'I counted the stores open in 2025.']),
             ScriptedModelProvider::text('There they are.'),
         );
         $history = $assistantManager->continueConversation($history, self::MODEL_KEY, '2025')['history'];
@@ -443,8 +552,8 @@ class AssistantManagerTest extends AssistantManagerTestCase
             ['type' => AssistantManager::EVENT_USER_MESSAGE, 'text' => 'How many stores?'],
             ['type' => AssistantManager::EVENT_QUESTION, 'toolUseId' => 'toolu_q', 'question' => 'Which year?', 'options' => ['2025', '2024']],
             ['type' => AssistantManager::EVENT_USER_MESSAGE, 'text' => '2025'],
-            ['type' => AssistantManager::EVENT_QUERY, 'toolUseId' => 'toolu_bad', 'title' => 'Bad', 'interpretation' => 'I counted what was asked.', 'sql' => 'SELECT nme FROM store', 'error' => "The query failed: Unknown column 'nme'"],
-            ['type' => AssistantManager::EVENT_QUERY, 'toolUseId' => 'toolu_good', 'title' => 'Stores', 'interpretation' => 'I counted the stores of 2025.', 'sql' => 'SELECT COUNT(*) AS n FROM store', 'error' => null],
+            ['type' => AssistantManager::EVENT_QUERY, 'toolUseId' => 'toolu_bad', 'title' => 'Bad', 'interpretation' => 'I counted the stores that were asked for.', 'sql' => 'SELECT nme FROM store', 'error' => "The query failed: Unknown column 'nme'"],
+            ['type' => AssistantManager::EVENT_QUERY, 'toolUseId' => 'toolu_good', 'title' => 'Stores', 'interpretation' => 'I counted the stores open in 2025.', 'sql' => 'SELECT COUNT(*) AS n FROM store', 'error' => null],
             ['type' => AssistantManager::EVENT_TEXT, 'text' => 'There they are.'],
         ], $assistantManager->getTimeline($history));
 

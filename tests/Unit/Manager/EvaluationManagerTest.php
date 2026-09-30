@@ -49,6 +49,7 @@ class EvaluationManagerTest extends AssistantManagerTestCase
             'The test case "store-count" needs a question, expectQuestion and expectQuery.' => [['expectQuestion' => 'yes'] + self::CASE],
             'The test case "store-count" expects an unknown output "pdf".' => [['expectedOutput' => 'pdf'] + self::CASE],
             'The test case "store-count" holds an invalid SQL pattern "COUNT(".' => [['sqlMustContain' => ['COUNT(']] + self::CASE],
+            'The test case "store-count" needs a maxToolCalls that is a positive or zero integer.' => [['maxToolCalls' => -1] + self::CASE],
         ];
 
         foreach ($invalidCases as $expectedMessage => $cases) {
@@ -103,7 +104,8 @@ class EvaluationManagerTest extends AssistantManagerTestCase
         ]);
 
         $grading = $evaluationManager->grade(self::CASE, $passingRun);
-        $this->assertSame(['pass' => 1.0, 'clarification' => 1.0, 'query' => 1.0, 'sql' => 1.0, 'output' => 1.0, 'referential' => 1.0], $grading['grade']);
+        $this->assertSame(['pass' => 1.0, 'clarification' => 1.0, 'query' => 1.0, 'sql' => 1.0, 'output' => 1.0, 'referential' => 1.0, 'tools' => 1.0], $grading['grade']);
+        $this->assertSame(1.0, $evaluationManager->grade(['maxToolCalls' => 3] + self::CASE, $passingRun)['grade']['tools'], 'The question and the two queries fit in three calls.');
         $this->assertSame(1, $grading['details']['questionCount']);
         $this->assertSame(2, $grading['details']['queryCount']);
         $this->assertSame(1, $grading['details']['failedQueryCount']);
@@ -116,6 +118,7 @@ class EvaluationManagerTest extends AssistantManagerTestCase
             'output' => ['expectedOutput' => 'chart'] + self::CASE,
             'referential' => ['expectReferentialSearch' => true] + self::CASE,
             'query' => ['expectQuery' => false] + self::CASE,
+            'tools' => ['maxToolCalls' => 2] + self::CASE,
         ];
         foreach ($failures as $metric => $case) {
             $grade = $evaluationManager->grade($case, $passingRun)['grade'];
@@ -143,6 +146,24 @@ class EvaluationManagerTest extends AssistantManagerTestCase
         $this->assertTrue($grading['details']['refused']);
     }
 
+    public function testPassesAnOffTopicRequestOnlyWhenTheAssistantAnswersWithoutAnyToolCall(): void
+    {
+        $evaluationManager = $this->createEvaluationManager();
+        $case = ['expectQuestion' => false, 'expectQuery' => false, 'maxToolCalls' => 0] + self::CASE;
+
+        $direct = $this->runScript($evaluationManager, [ScriptedModelProvider::text('I only answer questions about the stores and their employees.')]);
+        $this->assertSame(1.0, $evaluationManager->grade($case, $direct)['grade']['pass']);
+
+        $searched = $this->runScript($evaluationManager, [
+            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_DESCRIBE_TABLES, ['tables' => ['store']]),
+            ScriptedModelProvider::text('The database holds no recipe.'),
+        ]);
+        $grade = $evaluationManager->grade($case, $searched)['grade'];
+        $this->assertSame(1.0, $grade['query'], 'No query ran, only the tool budget tells the useless search apart.');
+        $this->assertSame(0.0, $grade['tools']);
+        $this->assertSame(0.0, $grade['pass']);
+    }
+
     public function testWritesTheResultsForTheReportAndResumesAfterThem(): void
     {
         $evaluationManager = $this->createEvaluationManager();
@@ -152,6 +173,8 @@ class EvaluationManagerTest extends AssistantManagerTestCase
             ScriptedModelProvider::text('Here it is.'),
         ]);
 
+        // Left by a run older than the last metric added
+        $this->filesystem->dumpFile($this->directory.'/_state.json', json_encode(['metrics' => [], 'perf_fields' => []]));
         $evaluationManager->saveResult('v1', ['tags' => ['precise']] + self::CASE, 0, $run, $evaluationManager->grade(self::CASE, $run));
         $evaluationManager->saveError('v1', self::CASE, 1, 'api_error', 'Overloaded');
 

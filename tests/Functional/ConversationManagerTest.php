@@ -4,8 +4,11 @@ namespace Tknoweb\AiSqlAssistantBundle\Tests\Functional;
 
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityRepository;
+use Symfony\Component\Lock\LockFactory;
+use Symfony\Component\Lock\Store\InMemoryStore;
 use Tknoweb\AiSqlAssistantBundle\Manager\AssistantManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\ConversationManager;
+use Tknoweb\AiSqlAssistantBundle\Provider\ModelProviderException;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\Conversation;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\ConversationExchange;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\ScriptedModelProvider;
@@ -33,7 +36,7 @@ class ConversationManagerTest extends FunctionalTestCase
         $this->assertSame('How many stores?', $conversation->getTitle());
         $this->assertSame(TestKernel::MODEL_KEY, $conversation->getModelKey());
         $this->assertSame('alice', $conversation->getOwner()->getUserIdentifier());
-        $this->assertNull($conversation->getId(), 'Only the first turn saves it, so that a failed call leaves nothing behind.');
+        $this->assertNull($conversation->getId(), 'Only its first turn saves it.');
         $this->assertTrue($this->getEntityManager()->getUnitOfWork()->isScheduledForInsert($conversation));
 
         $title = $this->conversationManager->createConversation($this->getUser('alice'), TestKernel::MODEL_KEY, str_repeat('é', 300))->getTitle();
@@ -81,6 +84,89 @@ class ConversationManagerTest extends FunctionalTestCase
         foreach ([$conversation->getHistory(), $exchanges[0]->getResponse(), $exchanges[1]->getResponse()] as $stored) {
             $this->assertStringNotContainsString('Alpha store', json_encode($stored, JSON_THROW_ON_ERROR));
         }
+    }
+
+    public function testRunsARequestedTurnOnceSavingEachStepAtOnce(): void
+    {
+        $conversation = $this->conversationManager->createConversation($this->getUser('alice'), TestKernel::MODEL_KEY, 'How many stores?');
+        $this->conversationManager->requestTurn($conversation, 'How many stores?');
+        $id = $conversation->getId();
+        $this->assertNotNull($id, 'A requested turn saves its new conversation, so that its owner finds it again while the turn runs.');
+        $this->assertSame(ConversationManager::TURN_WAITING, $this->conversationManager->getTurnState($conversation));
+
+        try {
+            $this->conversationManager->requestTurn($conversation, 'Another question');
+            $this->fail('A second turn cannot be requested while the first one is in progress.');
+        } catch (\LogicException) {
+            $this->assertSame('How many stores?', $conversation->getPendingInput());
+        }
+
+        $stateWhileRunning = null;
+        $stepsWhileRunning = null;
+        $this->getProvider()->queue(
+            ScriptedModelProvider::query('toolu_1', 'SELECT COUNT(*) AS stores FROM store', ['title' => 'Stores']),
+            function () use ($conversation, $id, &$stateWhileRunning, &$stepsWhileRunning): array {
+                $stateWhileRunning = $this->conversationManager->getTurnState($conversation);
+                $stepsWhileRunning = $this->getSavedTurnSteps($id);
+
+                return ScriptedModelProvider::text('There are three stores.');
+            },
+        );
+
+        $this->assertTrue($this->conversationManager->runPendingTurn($conversation));
+
+        $this->assertSame(ConversationManager::TURN_RUNNING, $stateWhileRunning, 'The turn is running while its request holds its lock.');
+        $this->assertSame([['type' => 'thinking'], ['type' => 'runningQuery', 'title' => 'Stores'], ['type' => 'thinking']], $stepsWhileRunning, 'Each step is saved as it starts.');
+        $this->assertFalse($this->conversationManager->runPendingTurn($conversation), 'A turn runs only once.');
+
+        $this->getEntityManager()->clear();
+        $conversation = $this->getEntityManager()->find(Conversation::class, $id);
+        $this->assertNull($this->conversationManager->getTurnState($conversation));
+        $this->assertNull($conversation->getPendingInput());
+        $this->assertSame([], $conversation->getTurnSteps());
+        $this->assertCount(4, $conversation->getHistory());
+        $this->assertCount(1, $this->getEntityManager()->getRepository(ConversationExchange::class)->findAll());
+        $this->assertCount(2, $this->getProvider()->calls);
+    }
+
+    public function testKeepsTheMessageOfATurnTheModelApiFailed(): void
+    {
+        $conversation = $this->createConversation('alice', 'How many stores?');
+        $this->conversationManager->requestTurn($conversation, 'And by city?');
+        $this->getProvider()->queue(new ModelProviderException('The model API failed: overloaded'));
+
+        try {
+            $this->conversationManager->runPendingTurn($conversation);
+            $this->fail('The failure of the model API must reach the caller.');
+        } catch (ModelProviderException) {
+        }
+
+        $this->getEntityManager()->clear();
+        $conversation = $this->getEntityManager()->find(Conversation::class, $conversation->getId());
+        $this->assertSame(ConversationManager::TURN_FAILED, $this->conversationManager->getTurnState($conversation));
+        $this->assertSame('And by city?', $conversation->getPendingInput());
+        $this->assertCount(4, $conversation->getHistory(), 'Nothing of a failed turn is saved in the history.');
+        $this->assertFalse($this->conversationManager->runPendingTurn($conversation), 'A failed turn only runs again once requested again.');
+
+        $this->conversationManager->requestTurn($conversation, 'And by city, please?');
+        $this->assertSame(ConversationManager::TURN_WAITING, $this->conversationManager->getTurnState($conversation));
+        $this->assertSame('And by city, please?', $conversation->getPendingInput());
+        $this->assertSame([], $conversation->getTurnSteps());
+    }
+
+    public function testSeesATurnWhoseRequestDiedAsFailed(): void
+    {
+        $conversation = $this->createConversation('alice', 'How many stores?');
+        $this->conversationManager->requestTurn($conversation, 'And by city?');
+        // Started by a request that died since, releasing its lock
+        $conversation->startTurn()->addTurnStep(['type' => 'thinking']);
+        $this->getEntityManager()->flush();
+
+        $this->assertSame(ConversationManager::TURN_FAILED, $this->conversationManager->getTurnState($conversation));
+
+        $lock = $this->holdTurnLock($conversation);
+        $this->assertSame(ConversationManager::TURN_RUNNING, $this->conversationManager->getTurnState($conversation), 'A turn whose lock is held is still running.');
+        $lock->release();
     }
 
     public function testNeverShowsAConversationToAnotherUserNorOnceArchived(): void
@@ -150,7 +236,12 @@ class ConversationManagerTest extends FunctionalTestCase
     {
         $entityManager = $this->createStub(EntityManagerInterface::class);
         $entityManager->method('getRepository')->willReturn($this->createStub(EntityRepository::class));
-        $conversationManager = new ConversationManager(static::getContainer()->get(AssistantManager::class), $entityManager, ['conversation' => Conversation::class, 'exchange' => ConversationExchange::class]);
+        $conversationManager = new ConversationManager(
+            static::getContainer()->get(AssistantManager::class),
+            $entityManager,
+            new LockFactory(new InMemoryStore()),
+            ['conversation' => Conversation::class, 'exchange' => ConversationExchange::class],
+        );
 
         try {
             $conversationManager->getConversations($this->getUser('alice'));

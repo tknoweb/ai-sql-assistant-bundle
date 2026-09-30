@@ -30,6 +30,14 @@ class QueryManagerTest extends FunctionalTestCase
         $this->assertFalse(static::getContainer()->get('doctrine.dbal.assistant_connection')->isTransactionActive(), 'The transaction of the query must be rolled back.');
     }
 
+    public function testFindsTheColumnsAnEnumOfTheMappingBacks(): void
+    {
+        $result = $this->queryManager->execute('SELECT s.name AS store, s.status AS state FROM store s ORDER BY s.name', 10);
+
+        $this->assertSame(['store', 'state'], $result['columns']);
+        $this->assertSame(['state'], $result['codedColumns']);
+    }
+
     public function testRefusesTheForbiddenNamesOfTheMapping(): void
     {
         $refusedQueries = [

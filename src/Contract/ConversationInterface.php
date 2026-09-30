@@ -36,6 +36,35 @@ interface ConversationInterface
     public function getCost(): float;
 
     /**
+     * Message of the user whose turn has not ended: waiting for the request that runs it, running, or failed (see ConversationManager::getTurnState()).
+     */
+    public function getPendingInput(): ?string;
+
+    public function getTurnStartedAt(): ?\DateTimeImmutable;
+
+    /**
+     * Steps the pending turn went through, as reported by AssistantManager::continueConversation().
+     */
+    public function getTurnSteps(): array;
+
+    /**
+     * Make $userInput the pending turn, waiting for the request that runs it, in place of a failed one.
+     */
+    public function requestTurn(string $userInput): static;
+
+    /**
+     * Record that a request started running the pending turn.
+     */
+    public function startTurn(): static;
+
+    public function addTurnStep(array $step): static;
+
+    /**
+     * Forget the pending turn, once its history is saved.
+     */
+    public function endTurn(): static;
+
+    /**
      * Remove the conversation from the view of its owner, while keeping it in the database along with its logged exchanges.
      */
     public function archive(): void;

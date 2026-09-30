@@ -2,54 +2,86 @@
 {% trans_default_domain 'TknowebAiSqlAssistant' %}
 
 {% block body %}
-    <div class="container-fluid py-3" {{ stimulus_controller('ai-sql-assistant') }}>
-        <div class="d-flex align-items-center gap-2 mb-3">
-            <h1 class="h4 mb-0 me-auto text-truncate" title="{{ conversation.title }}">{{ conversation.title }}</h1>
-            <span class="badge text-bg-info py-2">{{ 'conversationCost'|trans({'cost': conversation.cost|number_format(3, ',', ' ')}) }}</span>
-
-            {# Only archived: the conversation disappears for its user but stays in the database, as its log does #}
-            <form method="post" action="{{ path(routePrefix ~ 'archive', {'id': conversation.id}) }}" data-turbo-confirm="{{ 'archiveConfirmation'|trans }}">
-                <input type="hidden" name="_token" value="{{ csrf_token(csrfTokenId) }}">
-                <button class="btn btn-sm btn-danger" type="submit">{{ 'archive'|trans }}</button>
-            </form>
-        </div>
-
+    {# Two Turbo frames, the history and the main column: opening a conversation, sending a message or the end of a turn only reload the main column, which then reloads the history #}
+    <div class="container-fluid py-3 ai-sql-assistant" {{ stimulus_controller('ai-sql-assistant', {'historyUrl': path(routePrefix ~ 'history')}) }}>
         {{ include('@TknowebAiSqlAssistant/chat/_flashes.html.twig') }}
 
-        <div class="row g-4">
+        {# Side by side, the columns fill the height of the chat and need no vertical gutter #}
+        <div class="row g-4 gy-lg-0 ai-sql-assistant-columns">
             <div class="col-12 col-lg-3">
-                {{ include('@TknowebAiSqlAssistant/chat/_history.html.twig', {'currentConversation': conversation}) }}
+                <turbo-frame id="ai-sql-assistant-history" class="ai-sql-assistant-history" {{ stimulus_target('ai-sql-assistant', 'history') }}>
+                    {{ include('@TknowebAiSqlAssistant/chat/_history.html.twig', {'currentConversation': conversation}) }}
+                </turbo-frame>
             </div>
 
             <div class="col-12 col-lg-9">
-                <div class="card">
-                    <div class="card-body">
-                        {% for event in timeline %}
-                            {{ include('@TknowebAiSqlAssistant/chat/_event.html.twig', {'event': event, 'isPendingQuestion': waitingForAnswer and loop.last}) }}
-                        {% endfor %}
-                        <div {{ stimulus_target('ai-sql-assistant', 'end') }}></div>
-                    </div>
+                <turbo-frame id="ai-sql-assistant-main"
+                             class="ai-sql-assistant-main"
+                             data-turbo-action="advance"
+                             {{ stimulus_target('ai-sql-assistant', 'main') }}
+                             {{ stimulus_action('ai-sql-assistant', 'mainLoaded', 'turbo:frame-load')|stimulus_action('ai-sql-assistant', 'frameRendering', 'turbo:before-frame-render') }}
+                >
+                    {# While a turn waits or runs, the controller asks for it to run when it waits, then follows it until its end #}
+                    <div class="ai-sql-assistant-conversation"
+                         {{ stimulus_target('ai-sql-assistant', 'conversation') }}
+                         data-conversation-id="{{ conversation.id }}"
+                         {% if turnInProgress %}
+                             data-turn-state="{{ turnState }}"
+                             data-run-url="{{ path(routePrefix ~ 'run', {'id': conversation.id}) }}"
+                             data-run-token="{{ csrf_token(csrfTokenId) }}"
+                             data-progress-url="{{ path(routePrefix ~ 'progress', {'id': conversation.id}) }}"
+                         {% endif %}
+                    >
+                        <div class="d-flex align-items-center gap-2 mb-3">
+                            <h1 class="h4 mb-0 me-auto text-truncate" title="{{ conversation.title }}">{{ conversation.title }}</h1>
+                            <span class="badge text-bg-info py-2">{{ 'conversationCost'|trans({'cost': conversation.cost|number_format(3, ',', ' ')}) }}</span>
 
-                    <div class="card-footer">
-                        <div class="small text-body-secondary mb-2" title="{{ 'questionCounterHelp'|trans({'max': maxQuestionCount}) }}">
-                            {{ 'questionCounter'|trans({'count': questionCount, 'max': maxQuestionCount}) }}
+                            {# Only archived: the conversation disappears for its user but stays in the database, as its log does #}
+                            <form method="post" action="{{ path(routePrefix ~ 'archive', {'id': conversation.id}) }}" data-turbo-confirm="{{ 'archiveConfirmation'|trans }}">
+                                <input type="hidden" name="_token" value="{{ csrf_token(csrfTokenId) }}">
+                                <button class="btn btn-sm btn-danger" type="submit">{{ 'archive'|trans }}</button>
+                            </form>
                         </div>
 
-                        {{ form_start(form) }}
-                            {{ form_widget(form.message, {'attr': {
-                                'placeholder': waitingForAnswer ? 'answerPlaceholder' : 'messagePlaceholder',
-                                'data-ai-sql-assistant-target': 'message',
-                            }}) }}
-                            {{ form_errors(form.message) }}
-                            {# Turbo disables the button and swaps its label while the turn runs, which can take a while #}
-                            {{ form_widget(form.send, {'attr': {
-                                'class': 'btn btn-primary mt-2',
-                                'data-turbo-submits-with': 'thinking'|trans,
-                                'data-ai-sql-assistant-target': 'submit',
-                            }}) }}
-                        {{ form_end(form) }}
+                        <div class="card">
+                            <div class="card-body">
+                                {% for event in timeline %}
+                                    {{ include('@TknowebAiSqlAssistant/chat/_event.html.twig', {'event': event, 'isPendingQuestion': waitingForAnswer and loop.last}) }}
+                                {% endfor %}
+                                {% if turnState is not null %}
+                                    {# Reloaded while the turn waits or runs #}
+                                    <turbo-frame id="ai-sql-assistant-turn"
+                                                 {{ stimulus_target('ai-sql-assistant', 'turn') }}
+                                                 {{ stimulus_action('ai-sql-assistant', 'turnLoaded', 'turbo:frame-load')|stimulus_action('ai-sql-assistant', 'turnFailed', 'turbo:fetch-request-error') }}
+                                    >
+                                        {{ include('@TknowebAiSqlAssistant/chat/_turn.html.twig') }}
+                                    </turbo-frame>
+                                {% endif %}
+                                {# At the end of the messages, which scroll between the header and the footer, so that the conversation opens on its last message #}
+                                <div {{ stimulus_target('ai-sql-assistant', 'end') }}></div>
+                            </div>
+
+                            <div class="card-footer">
+                                <div class="small text-body-secondary mb-2" title="{{ 'questionCounterHelp'|trans({'max': maxQuestionCount}) }}">
+                                    {{ 'questionCounter'|trans({'count': questionCount, 'max': maxQuestionCount}) }}
+                                </div>
+
+                                {{ form_start(form) }}
+                                    {# Disabled until the turn in progress ends #}
+                                    {{ form_widget(form.message, {'disabled': turnInProgress, 'attr': {
+                                        'placeholder': waitingForAnswer ? 'answerPlaceholder' : 'messagePlaceholder',
+                                        'data-ai-sql-assistant-target': 'message',
+                                    }}) }}
+                                    {{ form_errors(form.message) }}
+                                    {{ form_widget(form.send, {'disabled': turnInProgress, 'attr': {
+                                        'class': 'btn btn-primary mt-2',
+                                        'data-ai-sql-assistant-target': 'submit',
+                                    }}) }}
+                                {{ form_end(form) }}
+                            </div>
+                        </div>
                     </div>
-                </div>
+                </turbo-frame>
             </div>
         </div>
     </div>

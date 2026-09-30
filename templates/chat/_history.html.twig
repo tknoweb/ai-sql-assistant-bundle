@@ -1,5 +1,7 @@
 {# Conversations of the current user, the most recently continued first, shared by the home page and the conversation page. Each one is renamed in place ("ai-sql-assistant-history" controller)
-   and archived from here, both forms posting the conversation being read ("currentId") so that the user stays on it #}
+   and archived from here, both forms posting the conversation being read ("currentId") so that the user stays on it.
+   Content of the history frame: the links open in the main column, and so do the forms of the conversation being read, whose title or presence the main column shows as well; the other
+   forms only reload the history #}
 {% trans_default_domain 'TknowebAiSqlAssistant' %}
 {% set currentId = currentConversation is not null ? currentConversation.id : '' %}
 <div class="card h-100">
@@ -7,7 +9,7 @@
         <h2 class="h5 mb-0">{{ 'conversations'|trans }}</h2>
     </div>
     <div class="card-body p-2">
-        <a class="btn btn-sm btn-outline-primary w-100 mb-2" href="{{ path(routePrefix ~ 'index') }}">{{ 'newConversation'|trans }}</a>
+        <a class="btn btn-sm btn-outline-primary w-100 mb-2" href="{{ path(routePrefix ~ 'index') }}" data-turbo-frame="ai-sql-assistant-main">{{ 'newConversation'|trans }}</a>
 
         {% if conversations is empty %}
             <p class="text-body-secondary small text-center my-3">{{ 'noConversation'|trans }}</p>
@@ -22,6 +24,7 @@
                             <a class="d-block text-truncate fw-semibold text-reset text-decoration-none stretched-link"
                                href="{{ path(routePrefix ~ 'show', {'id': historyConversation.id}) }}"
                                title="{{ historyConversation.title }}"
+                               data-turbo-frame="ai-sql-assistant-main"
                             >{{ historyConversation.title }}</a>
                             <div class="d-flex align-items-center gap-2 small">
                                 <span class="me-auto {{ isCurrent ? '' : 'text-body-secondary' }}">{{ 'costValue'|trans({'cost': historyConversation.cost|number_format(3, ',', ' ')}) }}</span>
@@ -29,7 +32,12 @@
                                     {{- 'rename'|trans -}}
                                 </button>
                                 {# Only archived: the conversation disappears for its user but stays in the database, as its log does #}
-                                <form class="position-relative z-2" method="post" action="{{ path(routePrefix ~ 'archive', {'id': historyConversation.id}) }}" data-turbo-confirm="{{ 'archiveConfirmation'|trans }}">
+                                <form class="position-relative z-2"
+                                      method="post"
+                                      action="{{ path(routePrefix ~ 'archive', {'id': historyConversation.id}) }}"
+                                      data-turbo-confirm="{{ 'archiveConfirmation'|trans }}"
+                                      {% if isCurrent %}data-turbo-frame="ai-sql-assistant-main"{% endif %}
+                                >
                                     <input type="hidden" name="_token" value="{{ csrf_token(csrfTokenId) }}">
                                     <input type="hidden" name="currentId" value="{{ currentId }}">
                                     <button class="btn btn-link btn-sm p-0 {{ isCurrent ? 'text-reset' : 'link-danger' }}" type="submit">{{ 'archive'|trans }}</button>
@@ -40,6 +48,7 @@
                         <form method="post"
                               action="{{ path(routePrefix ~ 'rename', {'id': historyConversation.id}) }}"
                               hidden
+                              {% if isCurrent %}data-turbo-frame="ai-sql-assistant-main"{% endif %}
                               {{ stimulus_target('ai-sql-assistant-history', 'form') }}
                               {{ stimulus_action('ai-sql-assistant-history', 'submit', 'submit') }}
                         >

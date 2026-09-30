@@ -26,6 +26,8 @@ class JsonCatalogManager
     // Paths kept from a single kind of document and template version, so that the others still show
     private const MAX_RESULTS_PER_GROUP = 8;
     private const MAX_SEARCHED_WORDS = 5;
+    // Shortest beginning shared by the labels of a group that is given apart, in bytes
+    private const MIN_LABEL_PREFIX_LENGTH = 20;
     // Escape character of the LIKE patterns, set explicitly since the engines differ in their default one
     private const LIKE_ESCAPE_CHARACTER = '!';
 
@@ -39,10 +41,12 @@ class JsonCatalogManager
     }
 
     /**
-     * Paths of the catalog matching the most words of $text, at most MAX_RESULTS of them, grouped by kind of document and template version, along with the labels of their keys and whether
-     * more paths matched. A word is looked for in the paths and in their labels, its plural mark left out, and the labels are given once for all the paths to keep the result short.
+     * Paths of the catalog matching the most words of $text, at most MAX_RESULTS of them, grouped by kind of document and template version, each group with the labels of its paths, and
+     * whether more paths matched. A word is looked for in the paths and in their labels, its plural mark left out. $documentType and $template restrict the search to one kind of document or
+     * template version, the latest versions coming first otherwise. The labels stay in their group, a key being able to change its label from one template version to the next, and the
+     * beginning they share is given once per group, the labels of a form repeating the titles of its parts and tables.
      */
-    public function search(string $text): array
+    public function search(string $text, ?string $documentType = null, ?string $template = null): array
     {
         $words = [];
         foreach (preg_split('/\s+/u', mb_strtolower(trim($text))) as $word) {
@@ -59,17 +63,16 @@ class JsonCatalogManager
         }
 
         // One more path than returned is fetched, only to know whether the results were cut
-        $paths = $this->findMatchingPaths($words, self::MAX_RESULTS + 1, self::MAX_RESULTS_PER_GROUP);
+        $paths = $this->findMatchingPaths($words, self::MAX_RESULTS + 1, self::MAX_RESULTS_PER_GROUP, $documentType, $template);
 
         $groups = [];
-        $labels = [];
         foreach (array_slice($paths, 0, self::MAX_RESULTS) as $path) {
             $groupKey = implode('|', [$path['source_table'], $path['source_column'], $path['document_type'], $path['template']]);
             $groups[$groupKey] ??= array_filter([
                 'source' => $path['source_table'].'.'.$path['source_column'],
                 'document_type' => $path['document_type'],
                 'template' => $path['template'],
-            ], fn (?string $value) => null !== $value) + ['generic_paths' => [], 'truncated' => false];
+            ], fn (?string $value) => null !== $value) + ['generic_paths' => [], 'labels' => [], 'truncated' => false];
 
             // The path beyond the limit of its group only tells that the group was cut
             if ($path['group_rank'] > self::MAX_RESULTS_PER_GROUP) {
@@ -79,11 +82,55 @@ class JsonCatalogManager
             }
 
             $groups[$groupKey]['generic_paths'][] = $path['generic_path'];
-
-            $labels += null !== $path['labels'] ? json_decode($path['labels'], true, flags: JSON_THROW_ON_ERROR) : [];
+            $groups[$groupKey]['labels'] += null !== $path['labels'] ? json_decode($path['labels'], true, flags: JSON_THROW_ON_ERROR) : [];
         }
 
-        return ['results' => array_values($groups), 'labels' => $labels, 'truncated' => count($paths) > self::MAX_RESULTS];
+        return ['results' => array_map(fn (array $group) => $this->getCompactGroup($group), array_values($groups)), 'truncated' => count($paths) > self::MAX_RESULTS];
+    }
+
+    /**
+     * A group of paths as the model reads it: without labels when none of its keys has one (the keys of a JSON column written by code, for instance), and with the beginning its labels
+     * share given once, as "label_prefix", each label keeping the rest.
+     */
+    private function getCompactGroup(array $group): array
+    {
+        $labels = array_map('strval', $group['labels']);
+        $truncated = $group['truncated'];
+        unset($group['labels'], $group['truncated']);
+
+        if ([] !== $labels) {
+            $prefix = $this->getSharedLabelPrefix($labels);
+            if ('' !== $prefix) {
+                $group['label_prefix'] = rtrim($prefix);
+                $labels = array_map(fn (string $label) => substr($label, strlen($prefix)), $labels);
+            }
+
+            $group['labels'] = $labels;
+        }
+
+        $group['truncated'] = $truncated;
+
+        return $group;
+    }
+
+    /**
+     * Beginning shared by several labels, up to the end of a word so that no word nor multibyte character is cut, empty when too short to be worth giving apart.
+     */
+    private function getSharedLabelPrefix(array $labels): string
+    {
+        if (count($labels) < 2) {
+            return '';
+        }
+
+        $prefix = array_shift($labels);
+        foreach ($labels as $label) {
+            // The bytes two strings share at their start are the leading zero bytes of their exclusive or
+            $prefix = substr($prefix, 0, strspn($prefix ^ $label, "\0"));
+        }
+
+        $prefix = substr($prefix, 0, (int) strrpos($prefix, ' ') + 1);
+
+        return strlen($prefix) >= self::MIN_LABEL_PREFIX_LENGTH ? $prefix : '';
     }
 
     /**
@@ -179,9 +226,9 @@ class JsonCatalogManager
      * of document and template version, so that a document whose tables multiply the paths (per gender, per year...) does not hide the other documents: one more path of a group is returned,
      * with its "group_rank", only to tell that the group was cut.
      * Written in SQL since the score, the number of words matched, is a sum of conditions DQL cannot order by. The words being in lower case, so are the paths and labels they are compared
-     * to, whatever the collation of the engine.
+     * to, whatever the collation of the engine. A kind of document or a template version given restricts the paths to it.
      */
-    private function findMatchingPaths(array $words, int $limit, int $groupLimit): array
+    private function findMatchingPaths(array $words, int $limit, int $groupLimit, ?string $documentType, ?string $template): array
     {
         $connection = $this->entityManager->getConnection();
         $platform = $connection->getDatabasePlatform();
@@ -203,6 +250,14 @@ class JsonCatalogManager
             }
         }
 
+        $filter = '('.implode(' OR ', $conditions['filter']).')';
+        foreach (['document_type' => $documentType, 'template' => $template] as $column => $value) {
+            if (null !== $value) {
+                $filter .= sprintf(' AND %1$s = :restricted_%1$s', $column);
+                $parameters['restricted_'.$column] = $value;
+            }
+        }
+
         return $connection->fetchAllAssociative(
             $platform->modifyLimitQuery(sprintf(
                 'SELECT source_table, source_column, document_type, template, generic_path, labels, score, group_rank FROM ('
@@ -211,7 +266,7 @@ class JsonCatalogManager
                 .') scored_path) ranked_path WHERE group_rank <= %4$d + 1 ORDER BY score DESC, template DESC, source_table, document_type, generic_path',
                 implode(' + ', array_map(fn (string $condition) => sprintf('CASE WHEN %s THEN 1 ELSE 0 END', $condition), $conditions['score'])),
                 SqlDialect::quoteName($platform, $this->entityManager->getClassMetadata($this->entities['json_path'])->getTableName()),
-                implode(' OR ', $conditions['filter']),
+                $filter,
                 $groupLimit
             ), $limit),
             $parameters

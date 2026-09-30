@@ -7,8 +7,8 @@ use Tknoweb\AiSqlAssistantBundle\Provider\ModelMessage;
 use Tknoweb\AiSqlAssistantBundle\Provider\ToolCall;
 
 /**
- * Model provider answering from a script instead of an API: each call returns the next queued answer, or throws the next queued exception, and is recorded with what it was sent.
- * Its raw messages are plain arrays built by the static helpers, read back as they are.
+ * Model provider answering from a script instead of an API: each call returns the next queued answer, or throws the next queued exception, and is recorded with what it was sent. A queued
+ * closure is called when its turn comes, to look at what the caller saved so far, and gives the answer. Its raw messages are plain arrays built by the static helpers, read back as they are.
  */
 class ScriptedModelProvider implements ModelProviderInterface
 {
@@ -36,7 +36,7 @@ class ScriptedModelProvider implements ModelProviderInterface
     {
         return self::toolCall($id, 'run_query', $input + [
             'title' => 'Result',
-            'interpretation' => 'I counted what was asked.',
+            'interpretation' => 'I counted the stores that were asked for.',
             'sql' => $sql,
             'output' => 'table',
             'answer_template' => null,
@@ -55,7 +55,7 @@ class ScriptedModelProvider implements ModelProviderInterface
         ];
     }
 
-    public function queue(array|\Throwable ...$answers): static
+    public function queue(array|\Throwable|\Closure ...$answers): static
     {
         array_push($this->answers, ...$answers);
 
@@ -72,6 +72,9 @@ class ScriptedModelProvider implements ModelProviderInterface
         $this->calls[] = ['model' => $model, 'systemTexts' => $systemTexts, 'history' => $history, 'tools' => $tools, 'maxTokens' => $maxTokens];
 
         $answer = array_shift($this->answers) ?? throw new \LogicException('The scripted model provider has no answer left.');
+        if ($answer instanceof \Closure) {
+            $answer = $answer();
+        }
         if ($answer instanceof \Throwable) {
             throw $answer;
         }

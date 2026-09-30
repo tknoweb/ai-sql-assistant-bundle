@@ -25,6 +25,7 @@ class EvaluationManager
         ['id' => 'sql', 'label' => 'Expected SQL', 'kind' => 'binary'],
         ['id' => 'output', 'label' => 'Output', 'kind' => 'binary'],
         ['id' => 'referential', 'label' => 'Referential', 'kind' => 'binary'],
+        ['id' => 'tools', 'label' => 'Tool budget', 'kind' => 'binary'],
     ];
 
     private const PERF_FIELDS = [
@@ -78,6 +79,10 @@ class EvaluationManager
 
             if (isset($case['expectedOutput']) && !in_array($case['expectedOutput'], AssistantManager::OUTPUTS, true)) {
                 throw new \InvalidArgumentException(sprintf('The test case "%s" expects an unknown output "%s".', $caseId, $case['expectedOutput']));
+            }
+
+            if (isset($case['maxToolCalls']) && (!is_int($case['maxToolCalls']) || $case['maxToolCalls'] < 0)) {
+                throw new \InvalidArgumentException(sprintf('The test case "%s" needs a maxToolCalls that is a positive or zero integer.', $caseId));
             }
 
             foreach ($case['sqlMustContain'] ?? [] as $pattern) {
@@ -147,7 +152,8 @@ class EvaluationManager
         $successfulQueries = array_values(array_filter($queries, fn (array $event) => null === $event['error']));
         $lastQuery = end($successfulQueries) ?: null;
         $questionCount = count(array_keys($types, AssistantManager::EVENT_QUESTION, true));
-        $searchCount = $this->assistantManager->getToolCallCounts($run['history'])[AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL] ?? 0;
+        $toolCallCounts = $this->assistantManager->getToolCallCounts($run['history']);
+        $searchCount = $toolCallCounts[AssistantManager::TOOL_SEARCH_PUBLIC_REFERENTIAL] ?? 0;
         $refused = in_array(AssistantManager::EVENT_REFUSAL, $types, true);
 
         $grade = [
@@ -158,6 +164,7 @@ class EvaluationManager
             'sql' => !$case['expectQuery'] || (null !== $lastQuery && [] === $this->getMissingPatterns($case['sqlMustContain'] ?? [], $lastQuery['sql'])),
             'output' => !$case['expectQuery'] || !isset($case['expectedOutput']) || (null !== $lastQuery && $case['expectedOutput'] === $lastQuery['output']),
             'referential' => !($case['expectReferentialSearch'] ?? false) || $searchCount > 0,
+            'tools' => !isset($case['maxToolCalls']) || array_sum($toolCallCounts) <= $case['maxToolCalls'],
         ];
         $grade = ['pass' => !$refused && self::STATUS_OK === $run['status'] && !in_array(false, $grade, true)] + $grade;
 
@@ -255,12 +262,12 @@ class EvaluationManager
         return $this->outputDirectory.'/'.$variant;
     }
 
+    /**
+     * Written again at each result, so that a metric added since the first run of the output directory reaches the report.
+     */
     private function writeStateFile(): void
     {
-        $stateFile = $this->outputDirectory.'/_state.json';
-        if (!$this->filesystem->exists($stateFile)) {
-            $this->filesystem->dumpFile($stateFile, json_encode(['metrics' => self::METRICS, 'perf_fields' => self::PERF_FIELDS], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
-        }
+        $this->filesystem->dumpFile($this->outputDirectory.'/_state.json', json_encode(['metrics' => self::METRICS, 'perf_fields' => self::PERF_FIELDS], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
     }
 
     private function getMissingPatterns(array $patterns, string $sql): array

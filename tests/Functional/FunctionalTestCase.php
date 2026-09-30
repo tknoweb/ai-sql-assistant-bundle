@@ -6,7 +6,11 @@ use Doctrine\DBAL\Platforms\SQLitePlatform;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\SchemaTool;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Lock\LockFactory;
+use Symfony\Component\Lock\LockInterface;
 use Symfony\Component\Security\Core\User\InMemoryUser;
+use Tknoweb\AiSqlAssistantBundle\Contract\ConversationInterface;
+use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\Conversation;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\Store;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\ScriptedModelProvider;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\StoreStatus;
@@ -47,6 +51,31 @@ abstract class FunctionalTestCase extends WebTestCase
     protected function getProvider(): ScriptedModelProvider
     {
         return static::getContainer()->get(ScriptedModelProvider::class);
+    }
+
+    /**
+     * Lock of the pending turn of a conversation, acquired as the request running the turn holds it until its end.
+     */
+    protected function holdTurnLock(ConversationInterface $conversation): LockInterface
+    {
+        $lock = static::getContainer()->get(LockFactory::class)->createLock('tknoweb_ai_sql_assistant_turn_'.$conversation->getId());
+        $this->assertTrue($lock->acquire());
+
+        return $lock;
+    }
+
+    /**
+     * Steps of the pending turn of a conversation as saved in the database, read around the entity manager, which could answer from its identity map.
+     */
+    protected function getSavedTurnSteps(int $id): array
+    {
+        $metadata = $this->getEntityManager()->getClassMetadata(Conversation::class);
+        $steps = $this->getEntityManager()->getConnection()->fetchOne(
+            sprintf('SELECT %s FROM %s WHERE %s = ?', $metadata->getColumnName('turnSteps'), $metadata->getTableName(), $metadata->getColumnName('id')),
+            [$id],
+        );
+
+        return is_string($steps) ? json_decode($steps, true, flags: JSON_THROW_ON_ERROR) ?? [] : [];
     }
 
     protected function getUser(string $identifier): InMemoryUser

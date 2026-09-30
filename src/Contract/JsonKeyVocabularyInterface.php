@@ -17,7 +17,8 @@ interface JsonKeyVocabularyInterface
     public function getWords(?string $documentType): array;
 
     /**
-     * Labels of the segments of a generic path, by segment, as the forms of that document type and version show them, null when none has any.
+     * Labels of a generic path as the forms of that document type and version show them, null when there is none: by segment, or by the whole generic path (its root key then each sub key
+     * in brackets, as the catalog writes it) when the label of a field depends on its whole key, a form often building a key in a loop from pieces that tell nothing on their own.
      */
     public function getLabels(array $genericSegments, ?string $documentType, ?string $template): ?array;
 

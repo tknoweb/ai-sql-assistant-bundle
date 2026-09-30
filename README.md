@@ -20,10 +20,13 @@ The `@vendor/...` line must be plain text, not inside a code block.
 
 ## How it works
 
-- **Conversation.** The model asks its clarification questions (`ask_user` tool), 10 at most per request, then runs its query (`run_query` tool) with an interpretation sentence stating exactly what is counted. The user checks that sentence, not the SQL.
+- **Conversation.** The model asks its clarification questions (`ask_user` tool), 10 at most per request, then runs its query (`run_query` tool) with an interpretation sentence stating exactly what is counted. The user checks that sentence, not the SQL, so a query without a title or with an interpretation shorter than 30 characters goes back to the model without being run.
+- **Turns.** A message is first saved as the pending turn of its conversation, then run by a request of its own that the page sends, which holds a lock on the turn until its end. The page shows each step of the turn as it comes (thinking, reading the tables, searching a referential, running a query...), and the user may leave it and come back to the answer. A turn stopped before its end, by a failure of the model API or a restart of the web server, shows as failed, its message offered again.
+- **Pages.** The history and the main column are two Turbo frames: opening a conversation, starting one, sending a message or the end of a turn only reload the main column, which then reloads the history; renaming or archiving a conversation only reloads the history, or the main column for the conversation being read. The results already shown are kept rather than run again. In the question and message fields, Enter sends and Shift+Enter goes to the line.
 - **Sources.** First the curated views the application describes, then every table of the database (the model reads their columns on demand, `describe_tables` tool), then the content of the JSON columns, flattened every night into a dedicated table (`search_document_fields` tool to find their paths).
 - **Public referentials.** When the application provides some, the model can search them for the exact spelling of a name (`search_public_referential` tool, up to 20 names in a single call, each one going through `ReferentialProviderInterface::search()`). They are the only data it reads: only put there what you accept to send to the AI provider.
 - **Formats.** The model picks the first display format from the request; the user then switches between text, table, chart and Excel without any new call.
+- **Codes.** A result column shows the labels of its codes, translated by their value in `coded_values_translation_domain`, when the query selects a coded column as it is, whatever its alias: a column the mapping backs with an enum or a discriminator, or one of the `coded_columns` of the views. Inside an expression (`CASE`, `CONCAT`...) it keeps its codes.
 - **Cost.** The cost of each conversation is computed from the usage returned by the API, and displayed. The system prompt is cached.
 - **History.** Each turn is logged without any value of the database (questions, SQL, costs, duration), to be reviewed and to improve the documents of the prompt. A JSON export by period is provided by `ConversationManager::getExchangesExport()`.
 
@@ -32,6 +35,7 @@ The `@vendor/...` line must be plain text, not inside a code block.
 - PHP 8.2+, Symfony 7.1+, Doctrine ORM 3 on DBAL 3.8+ or 4.
 - One of these databases, detected from the DBAL connection (see "Database engines"): **MySQL 8**, **MariaDB 10.4+**, **PostgreSQL 10+**, **SQL Server 2017+**, or SQLite 3.25+ for tests and small applications.
 - Twig, Symfony forms, Security (a logged-in user), Stimulus and Turbo (Symfony UX), `symfony/ux-chartjs`, PhpSpreadsheet.
+- The Lock component, whose store must be shared by every web server of the application (the `flock` store fits a single server), since it tells a running turn from one whose request died.
 - An API key of the chosen provider (none for a local model).
 
 ## Installation
@@ -164,7 +168,7 @@ tknoweb_ai_sql_assistant:
         instructions: '%kernel.project_dir%/docs/assistant_instructions.md'   # context, language, examples
         dictionary: '%kernel.project_dir%/docs/assistant_dictionary.md'       # ambiguous notions and their default rules
         database: '%kernel.project_dir%/docs/assistant_views.md'              # description of the curated views
-    coded_columns:                             # columns of views holding the codes of an enum
+    coded_columns:                             # columns of views holding the codes of an enum (the mapping gives the ones of the tables)
         order_status: App\Enum\OrderStatus
     coded_values_translation_domain: messages  # translation domain of the codes
     column_label_translation_prefix: column    # header key of a coded column: columnOrderStatus
@@ -258,10 +262,10 @@ A query is also refused when an engine could read it in another way than the bun
 
 ## Customization
 
-- **Templates.** The Bootstrap 5 templates of the bundle (`templates/chat/`) are overridden in `templates/bundles/TknowebAiSqlAssistantBundle/chat/`. They receive `baseTemplate`, `routePrefix` and `csrfTokenId`.
+- **Templates.** The Bootstrap 5 templates of the bundle (`templates/chat/`) are overridden in `templates/bundles/TknowebAiSqlAssistantBundle/chat/`. They receive `baseTemplate`, `routePrefix` and `csrfTokenId`. An override of `index.html.twig` or `show.html.twig` keeps the Turbo frames and the targets of the `ai-sql-assistant` controller they hold: the history frame `ai-sql-assistant-history`, the main column frame `ai-sql-assistant-main` (`data-turbo-action="advance"` and its two actions, on `turbo:frame-load` and `turbo:before-frame-render`) and, on a conversation, its `conversation` target with its `data-*` attributes, the turn frame `ai-sql-assistant-turn` and the `end` target at the end of the messages, where the conversation opens. On a wide screen the chat holds in the window, the history and the messages each scrolling on their own: the override keeps the classes `ai-sql-assistant` (the element of the controller), `ai-sql-assistant-columns` (the row of the two columns), `ai-sql-assistant-history` and `ai-sql-assistant-main` (the frames) and `ai-sql-assistant-conversation` (the `conversation` target, its card holding the messages in its `card-body`), and a page that puts something around the chat sets the height it leaves in the CSS variable `--ai-sql-assistant-height` (`100vh` by default). An override of `_history.html.twig` keeps the `data-turbo-frame` of its links and of the forms of the conversation being read, and one of `_event.html.twig` the `data-turbo-permanent` of the result frames.
 - **Texts.** Translation domain `TknowebAiSqlAssistant` (French and English provided). A `translations/TknowebAiSqlAssistant+intl-icu.<locale>.yaml` file of the application overrides the keys it needs, for instance `questionPlaceholder`.
 - **Public referentials.** A service implementing `ReferentialProviderInterface`: names of the referentials, description for the model, search. Declared in `referential_provider`.
-- **Form keys.** When the keys of a JSON column come from a form, a user can post any key to it: a service implementing `JsonKeyVocabularyInterface` (registered automatically) gives the allowed words and the labels, and only the paths made of these words enter the catalog sent to the model. Without a vocabulary, a key only has to look like a field name.
+- **Form keys.** When the keys of a JSON column come from a form, a user can post any key to it: a service implementing `JsonKeyVocabularyInterface` (registered automatically) gives the allowed words and the labels, and only the paths made of these words enter the catalog sent to the model. Without a vocabulary, a key only has to look like a field name. The labels of a path are given by key segment, or by the whole generic path when a form builds its keys in loops from pieces that tell nothing on their own; they are kept per template version, and a field search returns them with the group of paths of their version, the beginning they share given once. The model can restrict a field search to a kind of document or a template version.
 
 ## Security
 
@@ -308,5 +312,6 @@ When an application installs the bundle through a Composer repository of type `p
   sqlMustContain: ['orders', '2025']
   expectedOutput: text         # text, table, chart or excel
   expectReferentialSearch: false
+  maxToolCalls: 8              # optional: most tool calls allowed, questions and queries included (0 for a request outside the data)
   answers: []                  # answers of the simulated user, the first option offered otherwise
 ```

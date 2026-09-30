@@ -5,6 +5,7 @@ namespace Tknoweb\AiSqlAssistantBundle\Controller;
 use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\Form\FormError;
 use Symfony\Component\Form\FormInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -23,10 +24,14 @@ use Tknoweb\AiSqlAssistantBundle\Provider\ModelProviderException;
 /**
  * Chat of the assistant: each user only ever reaches their own conversations, which they can rename and archive (the log keeps them). Its routes are imported by the application, which sets their path
  * prefix and their name prefix, the latter also set in the "route_name_prefix" configuration so that the controller and the templates can build them.
+ * The pages are made of two Turbo frames, the history and the main column, so that most actions only reload one of them. Every action still answers a page without Turbo.
  */
 class ChatController extends AbstractController
 {
     public const TRANSLATION_DOMAIN = 'TknowebAiSqlAssistant';
+
+    // Turbo frame of the history of the conversations, next to the main column ("ai-sql-assistant-main")
+    public const HISTORY_FRAME = 'ai-sql-assistant-history';
 
     // A turn can chain several calls to the model API and several queries, far beyond the default PHP time limit
     private const TURN_TIME_LIMIT_SECONDS = 300;
@@ -62,10 +67,9 @@ class ChatController extends AbstractController
         if ($form->isSubmitted() && $form->isValid()) {
             $question = $form->get('question')->getData();
             $conversation = $this->conversationManager->createConversation($user, $this->assistantManager->getDefaultModelKey(), $question);
+            $this->conversationManager->requestTurn($conversation, $question);
 
-            if ($this->runTurn($conversation, $question)) {
-                return $this->redirectToRoute($this->routeNamePrefix.'show', ['id' => $conversation->getId()]);
-            }
+            return $this->redirectToRoute($this->routeNamePrefix.'show', ['id' => $conversation->getId()]);
         }
 
         return $this->renderPage('@TknowebAiSqlAssistant/chat/index.html.twig', [
@@ -75,7 +79,8 @@ class ChatController extends AbstractController
     }
 
     /**
-     * A conversation and the form continuing it, which answers the pending question of the assistant when there is one.
+     * A conversation and the form continuing it, which answers the pending question of the assistant when there is one. While a turn waits or runs, the page shows its steps and the form is
+     * disabled; after a failed turn, the form offers its message again.
      */
     #[Route('/{id}', name: 'show', requirements: ['id' => '\d+'])]
     public function show(Request $request, int $id): Response
@@ -83,12 +88,21 @@ class ChatController extends AbstractController
         $user = $this->getAllowedUser();
         $conversation = $this->getOwnConversation($user, $id);
         $history = $conversation->getHistory();
+        $turnState = $this->conversationManager->getTurnState($conversation);
+        $turnInProgress = in_array($turnState, ConversationManager::TURN_IN_PROGRESS_STATES, true);
 
         $form = $this->createForm(MessageType::class);
         $form->handleRequest($request);
 
-        if ($form->isSubmitted() && $form->isValid() && $this->runTurn($conversation, $form->get('message')->getData())) {
+        if ($form->isSubmitted() && $turnInProgress) {
+            // A page left open since before the turn started may still post its form
+            $form->get('message')->addError(new FormError($this->translator->trans('turnInProgress', domain: self::TRANSLATION_DOMAIN)));
+        } elseif ($form->isSubmitted() && $form->isValid()) {
+            $this->conversationManager->requestTurn($conversation, $form->get('message')->getData());
+
             return $this->redirectToRoute($this->routeNamePrefix.'show', ['id' => $conversation->getId()]);
+        } elseif (!$form->isSubmitted() && ConversationManager::TURN_FAILED === $turnState) {
+            $form->get('message')->setData($conversation->getPendingInput());
         }
 
         return $this->renderPage('@TknowebAiSqlAssistant/chat/show.html.twig', [
@@ -96,11 +110,72 @@ class ChatController extends AbstractController
             'conversation' => $conversation,
             'conversations' => $this->conversationManager->getConversations($user),
             'timeline' => $this->assistantManager->getTimeline($history),
-            'waitingForAnswer' => $this->assistantManager->isWaitingForAnswer($history),
+            'turnState' => $turnState,
+            'turnInProgress' => $turnInProgress,
+            // The question a running turn answers offers its options no more
+            'waitingForAnswer' => !$turnInProgress && $this->assistantManager->isWaitingForAnswer($history),
             'questionCount' => min($this->assistantManager->getRequestQuestionCount($history), AssistantManager::MAX_QUESTIONS_PER_REQUEST),
             'maxQuestionCount' => AssistantManager::MAX_QUESTIONS_PER_REQUEST,
             'form' => $form,
         ], $this->getFormResponse($form));
+    }
+
+    /**
+     * Run the pending turn of the conversation, called by its page once the turn is saved. The turn goes on until its end even when the user leaves the page, which follows it through the
+     * progress route rather than through this response.
+     */
+    #[Route('/{id}/run', name: 'run', requirements: ['id' => '\d+'], methods: ['POST'])]
+    public function run(Request $request, int $id): Response
+    {
+        $conversation = $this->getOwnConversation($this->getAllowedUser(), $id);
+        $this->checkCsrfToken($request);
+
+        // Released first, so that the other pages of the user do not wait for the end of the turn
+        if ($request->hasSession() && $request->getSession()->isStarted()) {
+            $request->getSession()->save();
+        }
+        ignore_user_abort(true);
+        set_time_limit(self::TURN_TIME_LIMIT_SECONDS);
+
+        try {
+            $this->conversationManager->runPendingTurn($conversation);
+        } catch (ModelProviderException $exception) {
+            // The page learns it from the state of the turn, failed from now on
+            $this->logger->error('The assistant turn failed on the model API: '.$exception->getMessage(), ['exception' => $exception]);
+        }
+
+        return new Response(null, Response::HTTP_NO_CONTENT);
+    }
+
+    /**
+     * Turn frame of the conversation page, reloaded while the turn waits or runs. Once the turn is over, whether it ended or failed, the frame only holds a mark telling the page to reload
+     * the conversation.
+     */
+    #[Route('/{id}/progress', name: 'progress', requirements: ['id' => '\d+'], methods: ['GET'])]
+    public function progress(int $id): Response
+    {
+        $conversation = $this->getOwnConversation($this->getAllowedUser(), $id);
+        $turnState = $this->conversationManager->getTurnState($conversation);
+
+        return $this->renderPage('@TknowebAiSqlAssistant/chat/progress.html.twig', [
+            'conversation' => $conversation,
+            'turnState' => in_array($turnState, ConversationManager::TURN_IN_PROGRESS_STATES, true) ? $turnState : null,
+        ]);
+    }
+
+    /**
+     * History frame of the chat pages, which they reload once their main column changed, "current" being the conversation it shows.
+     */
+    #[Route('/history', name: 'history', methods: ['GET'])]
+    public function history(Request $request): Response
+    {
+        $user = $this->getAllowedUser();
+        $currentId = $request->query->getInt('current');
+
+        return $this->renderPage('@TknowebAiSqlAssistant/chat/history.html.twig', [
+            'conversations' => $this->conversationManager->getConversations($user),
+            'currentConversation' => 0 !== $currentId ? $this->conversationManager->getOwnConversation($user, $currentId) : null,
+        ]);
     }
 
     /**
@@ -153,7 +228,7 @@ class ChatController extends AbstractController
             throw new BadRequestHttpException($exception->getMessage(), $exception);
         }
 
-        return $this->redirectToCurrentPage($request, $user);
+        return $this->redirectToCurrentPage($request, $user, $conversation);
     }
 
     #[Route('/{id}/archive', name: 'archive', requirements: ['id' => '\d+'], methods: ['POST'])]
@@ -164,28 +239,12 @@ class ChatController extends AbstractController
         $this->checkCsrfToken($request);
 
         $this->conversationManager->archiveConversation($conversation);
-        $this->addFlash('success', $this->translator->trans('conversationArchived', domain: self::TRANSLATION_DOMAIN));
-
-        return $this->redirectToCurrentPage($request, $user);
-    }
-
-    /**
-     * Run a turn of the conversation. An error of the model API is shown to the user instead of an error page, and leaves the conversation as it was: nothing of the turn is saved.
-     */
-    private function runTurn(ConversationInterface $conversation, string $userInput): bool
-    {
-        set_time_limit(self::TURN_TIME_LIMIT_SECONDS);
-
-        try {
-            $this->conversationManager->continueConversation($conversation, $userInput);
-        } catch (ModelProviderException $exception) {
-            $this->logger->error('The assistant turn failed on the model API: '.$exception->getMessage(), ['exception' => $exception]);
-            $this->addFlash('danger', $this->translator->trans('error', domain: self::TRANSLATION_DOMAIN));
-
-            return false;
+        // Within a frame, the conversation leaving the history says it well enough, and the page would only show the message after its next full load
+        if (!$request->headers->has('Turbo-Frame')) {
+            $this->addFlash('success', $this->translator->trans('conversationArchived', domain: self::TRANSLATION_DOMAIN));
         }
 
-        return true;
+        return $this->redirectToCurrentPage($request, $user, $conversation);
     }
 
     /**
@@ -204,13 +263,22 @@ class ChatController extends AbstractController
     }
 
     /**
-     * Page the user renamed or archived a conversation from: the conversation they were reading, posted as "currentId" by the history, unless that is the one they archived, else the home page.
+     * Page the user renamed or archived $conversation from: the conversation they were reading, posted as "currentId" by the history, unless that is the one they archived, else the home page.
+     * Posted from the history frame about another conversation, only that frame is reloaded. Turbo names in "Turbo-Frame" the frame holding the form, not the one it targets: the history
+     * forms of the conversation being read target the main column, which shows it as well and reloads the history in turn.
      */
-    private function redirectToCurrentPage(Request $request, UserInterface $user): Response
+    private function redirectToCurrentPage(Request $request, UserInterface $user, ConversationInterface $conversation): Response
     {
-        $currentId = $request->request->getInt('currentId');
-        if (0 !== $currentId && null !== $this->conversationManager->getOwnConversation($user, $currentId)) {
-            return $this->redirectToRoute($this->routeNamePrefix.'show', ['id' => $currentId]);
+        // Empty when posted from the home page, which getInt() would refuse
+        $currentId = (int) $request->request->getString('currentId');
+        $current = 0 !== $currentId ? $this->conversationManager->getOwnConversation($user, $currentId) : null;
+
+        if (self::HISTORY_FRAME === $request->headers->get('Turbo-Frame') && $conversation->getId() !== $currentId) {
+            return $this->redirectToRoute($this->routeNamePrefix.'history', null !== $current ? ['current' => $current->getId()] : []);
+        }
+
+        if (null !== $current) {
+            return $this->redirectToRoute($this->routeNamePrefix.'show', ['id' => $current->getId()]);
         }
 
         return $this->redirectToRoute($this->routeNamePrefix.'index');

@@ -1,0 +1,24 @@
+{# Turn of the conversation not over yet (ConversationManager::getTurnState()): the message of the user, then the steps of the assistant while the turn waits or runs, refreshed by the
+   "ai-sql-assistant" controller from the progress route, or the failure of the turn. The thinking of the model only shows as the current step, the finished ones listing what it did #}
+{% trans_default_domain 'TknowebAiSqlAssistant' %}
+<div class="d-flex justify-content-end mb-3">
+    <div class="rounded-3 bg-primary-subtle px-3 py-2 ai-sql-assistant-bubble">{{ conversation.pendingInput|nl2br }}</div>
+</div>
+
+{% if turnState == 'failed' %}
+    <div class="alert alert-danger">{{ 'error'|trans }}</div>
+{% else %}
+    {% set steps = conversation.turnSteps %}
+    <ul class="list-unstyled small text-body-secondary mb-3">
+        {% for step in steps|slice(0, -1)|filter(step => step.type != 'thinking') %}
+            <li class="mb-1">{{ include('@TknowebAiSqlAssistant/chat/_turn_step.html.twig') }}</li>
+        {% endfor %}
+        <li class="d-flex align-items-center gap-2">
+            <span class="spinner-border spinner-border-sm" role="status"></span>
+            {{ include('@TknowebAiSqlAssistant/chat/_turn_step.html.twig', {'step': steps is empty ? {'type': 'thinking'} : steps|last}) }}
+            {% if conversation.turnStartedAt is not null %}
+                <span>{{ 'elapsed'|trans({'seconds': 'now'|date('U') - conversation.turnStartedAt|date('U')}) }}</span>
+            {% endif %}
+        </li>
+    </ul>
+{% endif %}

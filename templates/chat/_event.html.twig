@@ -34,10 +34,12 @@
             <h3 class="h6 mb-1">{{ event.title }}</h3>
             <p class="text-body-secondary mb-3">{{ event.interpretation }}</p>
 
-            {# The result is never stored: its own frame runs the query again, lazily, so that the page does not wait for every query of the conversation #}
+            {# The result is never stored: its own frame runs the query again, lazily, so that the page does not wait for every query of the conversation. Permanent, so that a result
+               already shown is kept when the main column reloads rather than run again #}
             <turbo-frame id="ai-sql-assistant-query-{{ event.toolUseId }}"
                          src="{{ path(routePrefix ~ 'query', {'id': conversation.id, 'toolUseId': event.toolUseId}) }}"
                          loading="lazy"
+                         data-turbo-permanent
             >
                 <div class="text-center text-body-secondary py-4">
                     <div class="spinner-border" role="status"></div>

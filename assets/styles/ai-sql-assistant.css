@@ -1,4 +1,46 @@
 /* Styles of the chat of tknoweb/ai-sql-assistant-bundle, written flat: there is no build step */
+
+/* On a wide screen the chat holds in the window: the history and the messages of the conversation each scroll on their own, the header and the footer of the conversation staying in
+   view. A page that puts something around the chat sets the height it leaves in "--ai-sql-assistant-height" */
+@media (min-width: 992px) {
+  .ai-sql-assistant {
+    display: flex;
+    flex-direction: column;
+    height: var(--ai-sql-assistant-height, 100vh);
+  }
+
+  .ai-sql-assistant-columns {
+    flex: 1 1 0;
+    min-height: 0;
+  }
+
+  .ai-sql-assistant-columns > * {
+    height: 100%;
+  }
+
+  .ai-sql-assistant-history,
+  .ai-sql-assistant-main {
+    display: block;
+    height: 100%;
+  }
+
+  .ai-sql-assistant-conversation {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  .ai-sql-assistant-conversation > .card {
+    flex: 1 1 0;
+    min-height: 0;
+  }
+
+  .ai-sql-assistant-history .card-body,
+  .ai-sql-assistant-conversation > .card > .card-body {
+    overflow-y: auto;
+  }
+}
+
 .ai-sql-assistant-bubble {
   max-width: 80%;
   overflow-wrap: anywhere;

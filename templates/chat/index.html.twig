@@ -2,34 +2,44 @@
 {% trans_default_domain 'TknowebAiSqlAssistant' %}
 
 {% block body %}
-    <div class="container-fluid py-3">
-        <h1 class="h4 mb-3">{{ 'title'|trans }}</h1>
-
+    {# The same two Turbo frames as the conversation page: the first question only reloads the main column, which then reloads the history #}
+    <div class="container-fluid py-3 ai-sql-assistant" {{ stimulus_controller('ai-sql-assistant', {'historyUrl': path(routePrefix ~ 'history')}) }}>
         {{ include('@TknowebAiSqlAssistant/chat/_flashes.html.twig') }}
 
-        <div class="row g-4">
+        {# Side by side, the columns fill the height of the chat and need no vertical gutter #}
+        <div class="row g-4 gy-lg-0 ai-sql-assistant-columns">
             <div class="col-12 col-lg-3">
-                {{ include('@TknowebAiSqlAssistant/chat/_history.html.twig', {'currentConversation': null}) }}
+                <turbo-frame id="ai-sql-assistant-history" class="ai-sql-assistant-history" {{ stimulus_target('ai-sql-assistant', 'history') }}>
+                    {{ include('@TknowebAiSqlAssistant/chat/_history.html.twig', {'currentConversation': null}) }}
+                </turbo-frame>
             </div>
 
             <div class="col-12 col-lg-9">
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="h5 mb-0" title="{{ 'intro'|trans }}">{{ 'newConversation'|trans }}</h2>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-body-secondary">{{ 'intro'|trans }}</p>
+                <turbo-frame id="ai-sql-assistant-main"
+                             class="ai-sql-assistant-main"
+                             data-turbo-action="advance"
+                             {{ stimulus_target('ai-sql-assistant', 'main') }}
+                             {{ stimulus_action('ai-sql-assistant', 'mainLoaded', 'turbo:frame-load')|stimulus_action('ai-sql-assistant', 'frameRendering', 'turbo:before-frame-render') }}
+                >
+                    <h1 class="h4 mb-3">{{ 'title'|trans }}</h1>
 
-                        {{ form_start(form) }}
-                            {{ form_row(form.question) }}
-                            <div class="d-flex flex-wrap align-items-center gap-3">
-                                {# Turbo disables the button and swaps its label while the first turn runs, which can take a while #}
-                                {{ form_widget(form.ask, {'attr': {'class': 'btn btn-primary', 'data-turbo-submits-with': 'thinking'|trans}}) }}
-                                <span class="text-body-secondary small ms-auto text-end">{{ 'privacy'|trans }}</span>
-                            </div>
-                        {{ form_end(form) }}
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="h5 mb-0" title="{{ 'intro'|trans }}">{{ 'newConversation'|trans }}</h2>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-body-secondary">{{ 'intro'|trans }}</p>
+
+                            {{ form_start(form) }}
+                                {{ form_row(form.question) }}
+                                <div class="d-flex flex-wrap align-items-center gap-3">
+                                    {{ form_widget(form.ask, {'attr': {'class': 'btn btn-primary'}}) }}
+                                    <span class="text-body-secondary small ms-auto text-end">{{ 'privacy'|trans }}</span>
+                                </div>
+                            {{ form_end(form) }}
+                        </div>
                     </div>
-                </div>
+                </turbo-frame>
             </div>
         </div>
     </div>
