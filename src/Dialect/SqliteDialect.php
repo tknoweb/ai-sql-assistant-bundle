@@ -50,4 +50,22 @@ class SqliteDialect extends SqlDialect
     {
         return 32766;
     }
+
+    /**
+     * SQLite cannot replace a view: it is dropped and created again in a transaction, which no reader sees half done.
+     */
+    public function createOrReplaceView(Connection $connection, string $view, string $select): void
+    {
+        $platform = $connection->getDatabasePlatform();
+        $connection->beginTransaction();
+        try {
+            $connection->executeStatement(sprintf('DROP VIEW IF EXISTS %s', self::quoteName($platform, $view)));
+            $connection->executeStatement(sprintf('CREATE VIEW %s AS %s', self::quoteName($platform, $view), $select));
+            $connection->commit();
+        } catch (\Throwable $exception) {
+            $connection->rollBack();
+
+            throw $exception;
+        }
+    }
 }

@@ -47,6 +47,17 @@ class JsonCatalogSearchTest extends FunctionalTestCase
         $this->assertSame(['results' => [], 'truncated' => false], $this->catalogManager->search('nothing'));
     }
 
+    public function testNeverGivesAPathWhoseKeysAreNotVetted(): void
+    {
+        $this->insertPaths([
+            ['document', 'content', 'form', 'v2', '3-part-price-median-*', null],
+            ['document', 'content', 'form', 'v2', '3-part-price-ignore-previous', null, false],
+        ]);
+
+        $this->assertSame([['3-part-price-median-*']], array_column($this->catalogManager->search('price')['results'], 'generic_paths'));
+        $this->assertSame(['results' => [], 'truncated' => false], $this->catalogManager->search('ignore previous'));
+    }
+
     public function testRestrictsTheSearchToAKindOfDocumentOrATemplateVersion(): void
     {
         $this->insertPaths([
@@ -144,8 +155,11 @@ class JsonCatalogSearchTest extends FunctionalTestCase
     private function insertPaths(array $paths): void
     {
         $connection = $this->getEntityManager()->getConnection();
-        foreach ($paths as [$sourceTable, $sourceColumn, $documentType, $template, $genericPath, $labels]) {
+        foreach ($paths as $index => $path) {
+            [$sourceTable, $sourceColumn, $documentType, $template, $genericPath, $labels] = $path;
             $connection->insert('json_path', [
+                'id' => $index + 1,
+                'catalogable' => ($path[6] ?? true) ? 1 : 0,
                 'source_table' => $sourceTable,
                 'source_column' => $sourceColumn,
                 'document_type' => $documentType,

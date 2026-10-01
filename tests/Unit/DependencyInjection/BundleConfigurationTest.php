@@ -57,6 +57,9 @@ class BundleConfigurationTest extends TestCase
 
         $this->assertSame('economical', $container->getParameter('tknoweb_ai_sql_assistant.default_model'));
         $this->assertSame('ROLE_USER', $container->getParameter('tknoweb_ai_sql_assistant.access_attribute'));
+        // The view of the flattened values is named after their table unless configured
+        $this->assertNull($container->getParameter('tknoweb_ai_sql_assistant.json_value_view'));
+        $this->assertSame(2, $container->getParameter('tknoweb_ai_sql_assistant.max_decimals'));
         $this->assertSame(['entities' => [], 'tables' => [], 'fields' => [], 'field_attributes' => []], [
             'entities' => $container->getParameter('tknoweb_ai_sql_assistant.forbidden.entities'),
             'tables' => $container->getParameter('tknoweb_ai_sql_assistant.forbidden.tables'),

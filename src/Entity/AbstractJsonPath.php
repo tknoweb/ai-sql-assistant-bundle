@@ -5,18 +5,19 @@ namespace Tknoweb\AiSqlAssistantBundle\Entity;
 use Doctrine\ORM\Mapping as ORM;
 
 /**
- * One generic path found in the flattened JSON values, for one kind of document: the catalog the assistant searches to write its queries on those values, since the keys of a JSON content
- * cannot be read from the code. Rebuilt along with the values, it holds no stored value, and a path whose keys the users post only makes it once each word of its keys is known to a
- * JsonKeyVocabularyInterface. The application extends it with its table name and the index #[ORM\Index(columns: ['source_table', 'source_column'])].
+ * One generic path found in the flattened JSON values, for one kind of document and template version: the values point to it, and its catalogable rows are the catalog the assistant searches
+ * to write its queries on those values, since the keys of a JSON content cannot be read from the code. Rebuilt along with the values, it holds no stored value, and a path whose keys the users
+ * post is only catalogable once each word of its keys is known to a JsonKeyVocabularyInterface. The application extends it with its table name and the index
+ * #[ORM\Index(columns: ['generic_path'])].
+ * The ids are given by JsonFlatteningManager, which writes the paths along with the values pointing to them, and change from one rebuild to the next.
  * The column names are explicit, whatever the naming strategy of the application, since JsonFlatteningManager and JsonCatalogManager write them in plain SQL.
  */
 #[ORM\MappedSuperclass]
 abstract class AbstractJsonPath
 {
     #[ORM\Id]
-    #[ORM\GeneratedValue]
     #[ORM\Column]
-    protected ?int $id = null;
+    protected int $id;
 
     #[ORM\Column(name: 'source_table', length: 64)]
     protected string $sourceTable;
@@ -35,11 +36,15 @@ abstract class AbstractJsonPath
     #[ORM\Column(name: 'generic_path', length: AbstractJsonValue::PATH_MAX_LENGTH)]
     protected string $genericPath;
 
+    // Whether the field search may give the path to the model, its keys being vetted
+    #[ORM\Column(name: 'catalogable')]
+    protected bool $catalogable = false;
+
     // Labels of the keys of the path found in the templates, as a JSON object by key
     #[ORM\Column(name: 'labels', type: 'text', nullable: true)]
     protected ?string $labels = null;
 
-    public function getId(): ?int
+    public function getId(): int
     {
         return $this->id;
     }
@@ -67,6 +72,11 @@ abstract class AbstractJsonPath
     public function getGenericPath(): string
     {
         return $this->genericPath;
+    }
+
+    public function isCatalogable(): bool
+    {
+        return $this->catalogable;
     }
 
     public function getLabels(): ?string

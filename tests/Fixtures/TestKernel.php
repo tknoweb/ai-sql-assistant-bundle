@@ -146,6 +146,7 @@ class TestKernel extends Kernel
                 'json_value' => JsonValue::class,
                 'json_path' => JsonPath::class,
             ],
+            'json_value_view' => 'json_value',
             'prompt' => [
                 'instructions' => '%kernel.project_dir%/prompt/instructions.md',
                 'dictionary' => '%kernel.project_dir%/prompt/dictionary.md',

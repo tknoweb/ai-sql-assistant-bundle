@@ -12,6 +12,7 @@ use Tknoweb\AiSqlAssistantBundle\Manager\JsonFlatteningManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\ResultManager;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\Conversation;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\Document;
+use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\JsonPath;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\Entity\JsonValue;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\FormKeyVocabulary;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\TestKernel;
@@ -43,8 +44,12 @@ class BundleIntegrationTest extends FunctionalTestCase
     public function testMapsTheColumnsOfTheFlatTablesWhateverTheNamingStrategy(): void
     {
         $this->assertSame(
-            ['id', 'source_table', 'source_column', 'source_id', 'path', 'generic_path', 'path_id1', 'path_id2', 'path_id3', 'value', 'number_value'],
+            ['id', 'json_path_id', 'source_id', 'path_id1', 'path_id2', 'path_id3', 'value', 'number_value'],
             array_values($this->getEntityManager()->getClassMetadata(JsonValue::class)->getColumnNames())
+        );
+        $this->assertSame(
+            ['id', 'source_table', 'source_column', 'document_type', 'template', 'generic_path', 'catalogable', 'labels'],
+            array_values($this->getEntityManager()->getClassMetadata(JsonPath::class)->getColumnNames())
         );
         // The test application keeps the default naming strategy, which names the other columns in camel case
         $this->assertSame('modelKey', $this->getEntityManager()->getClassMetadata(Conversation::class)->getColumnName('modelKey'));

@@ -107,6 +107,7 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
                         ->scalarNode('json_path')->isRequired()->cannotBeEmpty()->end()
                     ->end()
                 ->end()
+                ->scalarNode('json_value_view')->info('View the model queries the flattened JSON values through, "<table of the json_value entity>_view" by default')->defaultNull()->end()
                 ->arrayNode('prompt')
                     ->info('Documents of the application added to the base instructions of the bundle in the system prompt')
                     ->addDefaultsIfNotSet()
@@ -183,7 +184,7 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
         $parameters = $container->parameters();
         $parameters->set('tknoweb_ai_sql_assistant.models', $models);
         $parameters->set('tknoweb_ai_sql_assistant.model_prices', $modelPrices);
-        foreach (['default_model', 'access_attribute', 'route_name_prefix', 'csrf_token_id', 'base_template', 'entities', 'prompt', 'coded_columns', 'coded_values_translation_domain', 'column_label_translation_prefix', 'locale', 'max_decimals', 'unflattened_json_entities'] as $key) {
+        foreach (['default_model', 'access_attribute', 'route_name_prefix', 'csrf_token_id', 'base_template', 'entities', 'json_value_view', 'prompt', 'coded_columns', 'coded_values_translation_domain', 'column_label_translation_prefix', 'locale', 'max_decimals', 'unflattened_json_entities'] as $key) {
             $parameters->set('tknoweb_ai_sql_assistant.'.$key, $config[$key]);
         }
         foreach (['entities', 'tables', 'fields', 'field_attributes'] as $key) {

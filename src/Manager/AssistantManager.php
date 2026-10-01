@@ -686,7 +686,7 @@ class AssistantManager
      */
     private function getToolDefinitions(): array
     {
-        $jsonValueTable = $this->schemaManager->getJsonValueTableName();
+        $jsonValueTable = $this->schemaManager->getJsonValueViewName();
 
         return [
             [

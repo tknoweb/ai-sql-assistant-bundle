@@ -123,4 +123,12 @@ class SqlServerDialect extends SqlDialect
         $connection->executeStatement(sprintf('DROP TABLE IF EXISTS %s', self::quoteName($platform, $copy)));
         $connection->executeStatement(sprintf('SELECT %s INTO %s FROM %s WHERE 1 = 0', self::quoteNames($platform, $columns), self::quoteName($platform, $copy), self::quoteName($platform, $table)));
     }
+
+    /**
+     * SQL Server writes CREATE OR ALTER rather than CREATE OR REPLACE.
+     */
+    public function createOrReplaceView(Connection $connection, string $view, string $select): void
+    {
+        $connection->executeStatement(sprintf('CREATE OR ALTER VIEW %s AS %s', self::quoteName($connection->getDatabasePlatform(), $view), $select));
+    }
 }

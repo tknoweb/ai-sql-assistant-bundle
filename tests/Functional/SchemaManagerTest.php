@@ -22,7 +22,7 @@ class SchemaManagerTest extends FunctionalTestCase
     public function testForbidsTheConfiguredNamesAndTheConversations(): void
     {
         $this->assertEqualsCanonicalizing(
-            ['messenger_messages', 'conversation', 'conversation_exchange', 'secret', 'password', 'recoveryCode'],
+            ['messenger_messages', 'conversation', 'conversation_exchange', 'json_value_data', 'secret', 'password', 'recoveryCode'],
             $this->schemaManager->getForbiddenNames()
         );
     }
@@ -69,6 +69,23 @@ class SchemaManagerTest extends FunctionalTestCase
         $this->assertStringNotContainsString('password', $this->schemaManager->describeTables(['employee']));
     }
 
+    public function testDescribesTheFlattenedValuesAsTheirView(): void
+    {
+        $tables = $this->schemaManager->getTables();
+
+        // The table of the values only holds the ids of their paths, which change from one rebuild to the next: the model reads the view joining them, never the table
+        $this->assertArrayNotHasKey('json_value_data', $tables);
+        $this->assertSame(
+            ['id', 'source_table', 'source_column', 'source_id', 'generic_path', 'path_id1', 'path_id2', 'path_id3', 'value', 'number_value'],
+            array_keys($tables['json_value']['columns'])
+        );
+        $this->assertSame(['type' => 'string'], $tables['json_value']['columns']['generic_path']);
+        $this->assertSame(['type' => 'bigint', 'nullable' => true], $tables['json_value']['columns']['path_id1']);
+        $this->assertSame(['type' => 'decimal', 'nullable' => true], $tables['json_value']['columns']['number_value']);
+        $this->assertStringContainsString("\n- `json_value`", $this->schemaManager->getTableList());
+        $this->assertStringContainsString("## json_value_data\n\nUnknown table", $this->schemaManager->describeTables(['json_value_data']));
+    }
+
     public function testListsTheJsonColumnsToFlatten(): void
     {
         $jsonColumns = $this->schemaManager->getJsonColumns();
@@ -79,6 +96,7 @@ class SchemaManagerTest extends FunctionalTestCase
             ['table' => 'document', 'column' => 'content', 'discriminatorColumn' => 'type', 'entityClass' => Document::class],
             ['table' => 'employee', 'column' => 'profile', 'discriminatorColumn' => null, 'entityClass' => Employee::class],
         ], $jsonColumns);
-        $this->assertSame('json_value', $this->schemaManager->getJsonValueTableName());
+        $this->assertSame('json_value_data', $this->schemaManager->getJsonValueTableName());
+        $this->assertSame('json_value', $this->schemaManager->getJsonValueViewName());
     }
 }

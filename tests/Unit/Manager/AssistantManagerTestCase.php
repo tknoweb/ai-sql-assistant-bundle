@@ -38,7 +38,7 @@ abstract class AssistantManagerTestCase extends TestCase
         $this->provider = new ScriptedModelProvider();
         $this->queryManager = $this->createStub(QueryManager::class);
         $this->schemaManager = $this->createStub(SchemaManager::class);
-        $this->schemaManager->method('getJsonValueTableName')->willReturn('json_value');
+        $this->schemaManager->method('getJsonValueViewName')->willReturn('json_value');
         $this->catalogManager = $this->createStub(JsonCatalogManager::class);
     }
 

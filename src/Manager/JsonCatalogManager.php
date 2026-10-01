@@ -2,6 +2,7 @@
 
 namespace Tknoweb\AiSqlAssistantBundle\Manager;
 
+use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
@@ -12,7 +13,8 @@ use Tknoweb\AiSqlAssistantBundle\Dialect\SqlDialect;
  * Catalog of the paths of the flattened JSON values, which the assistant searches to write its queries: the keys of a JSON content cannot be listed from the code, so the catalog is made of
  * the paths actually found in the contents, without any value.
  * A user can post any key to a column whose keys come from a form, so such a path only makes the catalog when each word of its keys is known to the JsonKeyVocabularyInterface supporting
- * that column, which also gives the labels of its keys. The keys of the other JSON columns are written by code, and only need to look like field names.
+ * that column, which also gives the labels of its keys. The keys of the other JSON columns are written by code, and only need to look like field names. The table of the paths holds the
+ * others too, flagged as not catalogable, since every value points to its path: the search leaves them out.
  */
 class JsonCatalogManager
 {
@@ -250,7 +252,9 @@ class JsonCatalogManager
             }
         }
 
-        $filter = '('.implode(' OR ', $conditions['filter']).')';
+        // Only the paths whose keys are vetted reach the model
+        $filter = 'catalogable = :catalogable AND ('.implode(' OR ', $conditions['filter']).')';
+        $parameters['catalogable'] = true;
         foreach (['document_type' => $documentType, 'template' => $template] as $column => $value) {
             if (null !== $value) {
                 $filter .= sprintf(' AND %1$s = :restricted_%1$s', $column);
@@ -269,7 +273,8 @@ class JsonCatalogManager
                 $filter,
                 $groupLimit
             ), $limit),
-            $parameters
+            $parameters,
+            ['catalogable' => Types::BOOLEAN]
         );
     }
 }

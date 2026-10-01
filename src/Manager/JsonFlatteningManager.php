@@ -11,11 +11,13 @@ use Tknoweb\AiSqlAssistantBundle\Dialect\SqlDialect;
 use Tknoweb\AiSqlAssistantBundle\Entity\AbstractJsonValue;
 
 /**
- * Rebuilds the table of the flattened JSON values, one row per value of the JSON columns of SchemaManager::getJsonColumns(), and its catalog, so that the assistant queries them in plain SQL.
- * Meant to run every night rather than on each save, the volume being high.
+ * Rebuilds the table of the flattened JSON values, one row per value of the JSON columns of SchemaManager::getJsonColumns(), and the table of their paths, whose catalogable rows make the
+ * catalog, so that the assistant queries them in plain SQL. Meant to run every night rather than on each save, the volume being high.
+ * Each value only holds the id of its path, given here as the paths are met, so that a path is stored once rather than on each of its values; the view the model queries joins them again
+ * under the columns of AbstractJsonValue::VIEW_COLUMNS, and is created or replaced at the end of each rebuild.
  * Both tables are filled as copies ("<table>_new"), then swapped with the live ones at once, as the SqlDialect of the connection does it, so that a query never sees them half built: the
  * schema filter of the connection must hide those copies from the migrations. The memory stays bounded whatever the volume: the source rows are read a few at a time, the values are
- * inserted by batches, and only a hash of each path already met is kept.
+ * inserted by batches, and only a hash and the id of each path already met are kept.
  */
 class JsonFlatteningManager
 {
@@ -32,8 +34,8 @@ class JsonFlatteningManager
 
     private const LOCK_NAME = 'tknoweb_ai_sql_assistant_json_flattening';
 
-    private const VALUE_COLUMNS = ['source_table', 'source_column', 'source_id', 'path', 'generic_path', 'path_id1', 'path_id2', 'path_id3', 'value', 'number_value'];
-    private const PATH_COLUMNS = ['source_table', 'source_column', 'document_type', 'template', 'generic_path', 'labels'];
+    private const VALUE_COLUMNS = ['json_path_id', 'source_id', 'path_id1', 'path_id2', 'path_id3', 'value', 'number_value'];
+    private const PATH_COLUMNS = ['id', 'source_table', 'source_column', 'document_type', 'template', 'generic_path', 'catalogable', 'labels'];
 
     private array $insertBuffers = [];
     private array $insertBufferBytes = [];
@@ -73,7 +75,7 @@ class JsonFlatteningManager
             $this->createNewTables();
 
             $counts = ['values' => 0, 'paths' => 0, 'skippedValues' => 0, 'skippedRows' => 0];
-            // Raw md5 of every path already met, catalogable or not, so that each one is only checked and written once
+            // Id of every path already met, catalogable or not, by the raw md5 of the path, so that each one is only checked and written once
             $metPaths = [];
             foreach ($this->schemaManager->getJsonColumns() as $jsonColumn) {
                 $this->flattenColumn($jsonColumn, $metPaths, $counts);
@@ -82,6 +84,7 @@ class JsonFlatteningManager
             $this->flushInsertBuffer(self::VALUE_TABLE);
             $this->flushInsertBuffer(self::PATH_TABLE);
             $this->swapTables();
+            $this->createValueView();
 
             return $counts;
         } finally {
@@ -106,6 +109,28 @@ class JsonFlatteningManager
         }
 
         $this->dialect->swapCopies($this->connection, $copies, $columns);
+    }
+
+    /**
+     * Create the view the model queries the values through, or replace it with the same query: each value joined to its path, under the columns of AbstractJsonValue::VIEW_COLUMNS. A view
+     * reads its tables by name, so the RENAME TABLE swap of MySQL leaves it reading the new ones.
+     */
+    private function createValueView(): void
+    {
+        $platform = $this->connection->getDatabasePlatform();
+        $columns = [];
+        foreach (AbstractJsonValue::VIEW_COLUMNS as $column => $table) {
+            $columns[] = (self::PATH_TABLE === $table ? 'p' : 'v').'.'.SqlDialect::quoteName($platform, $column);
+        }
+
+        $this->dialect->createOrReplaceView($this->connection, $this->schemaManager->getJsonValueViewName(), sprintf(
+            'SELECT %s FROM %s v INNER JOIN %s p ON p.%s = v.%s',
+            implode(', ', $columns),
+            SqlDialect::quoteName($platform, $this->tables[self::VALUE_TABLE]),
+            SqlDialect::quoteName($platform, $this->tables[self::PATH_TABLE]),
+            SqlDialect::quoteName($platform, 'id'),
+            SqlDialect::quoteName($platform, 'json_path_id')
+        ));
     }
 
     private function getColumns(string $table): array
@@ -182,12 +207,30 @@ class JsonFlatteningManager
         $words = $vocabulary?->getWords($documentType);
         ['segments' => $genericSegments, 'ids' => $pathIds] = $this->catalogManager->getGenericSegments($segments, $words);
 
-        $path = $this->getPath($segments);
         $genericPath = $this->getPath($genericSegments);
-        if (mb_strlen($path) > AbstractJsonValue::PATH_MAX_LENGTH) {
+        if (mb_strlen($genericPath) > AbstractJsonValue::PATH_MAX_LENGTH) {
             ++$counts['skippedValues'];
 
             return;
+        }
+
+        $pathHash = md5(implode("\0", [$jsonColumn['table'], $jsonColumn['column'], $documentType, $template, $genericPath]), true);
+        if (!isset($metPaths[$pathHash])) {
+            $metPaths[$pathHash] = count($metPaths) + 1;
+            $catalogable = $this->catalogManager->isCatalogable($genericSegments, $words);
+            $this->addInsertRow(self::PATH_TABLE, [
+                $metPaths[$pathHash],
+                $jsonColumn['table'],
+                $jsonColumn['column'],
+                $documentType,
+                $template,
+                $genericPath,
+                $catalogable ? 1 : 0,
+                $catalogable ? $this->getLabelsJson($vocabulary?->getLabels($genericSegments, $documentType, $template)) : null,
+            ]);
+            if ($catalogable) {
+                ++$counts['paths'];
+            }
         }
 
         if (is_bool($value)) {
@@ -195,34 +238,13 @@ class JsonFlatteningManager
         }
 
         $this->addInsertRow(self::VALUE_TABLE, [
-            $jsonColumn['table'],
-            $jsonColumn['column'],
+            $metPaths[$pathHash],
             $sourceId,
-            $path,
-            $genericPath,
             ...array_pad(array_slice($pathIds, 0, self::PATH_ID_COUNT), self::PATH_ID_COUNT, null),
             (string) $value,
             $this->getNumberValue($value),
         ]);
         ++$counts['values'];
-
-        $pathHash = md5(implode("\0", [$jsonColumn['table'], $jsonColumn['column'], $documentType, $template, $genericPath]), true);
-        if (isset($metPaths[$pathHash])) {
-            return;
-        }
-
-        $metPaths[$pathHash] = true;
-        if ($this->catalogManager->isCatalogable($genericSegments, $words)) {
-            $this->addInsertRow(self::PATH_TABLE, [
-                $jsonColumn['table'],
-                $jsonColumn['column'],
-                $documentType,
-                $template,
-                $genericPath,
-                $this->getLabelsJson($vocabulary?->getLabels($genericSegments, $documentType, $template)),
-            ]);
-            ++$counts['paths'];
-        }
     }
 
     private function getLabelsJson(?array $labels): ?string

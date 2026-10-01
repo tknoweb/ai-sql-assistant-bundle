@@ -220,6 +220,14 @@ abstract class SqlDialect
     }
 
     /**
+     * Create a view on $select, or replace the query of the view when it already exists, in a single statement so that no query ever finds it missing.
+     */
+    public function createOrReplaceView(Connection $connection, string $view, string $select): void
+    {
+        $connection->executeStatement(sprintf('CREATE OR REPLACE VIEW %s AS %s', self::quoteName($connection->getDatabasePlatform(), $view), $select));
+    }
+
+    /**
      * A table name, schema-qualified or not, or a column name, quoted for the platform.
      */
     public static function quoteName(AbstractPlatform $platform, string $name): string

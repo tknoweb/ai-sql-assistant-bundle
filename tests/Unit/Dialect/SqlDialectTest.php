@@ -2,6 +2,7 @@
 
 namespace Tknoweb\AiSqlAssistantBundle\Tests\Unit\Dialect;
 
+use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Platforms\MariaDBPlatform;
 use Doctrine\DBAL\Platforms\MySQL80Platform;
@@ -122,6 +123,38 @@ class SqlDialectTest extends TestCase
         $this->assertSame('PostgreSQL', (new PostgreSqlDialect())->getName());
         $this->assertSame('SQL Server (Transact-SQL)', (new SqlServerDialect())->getName());
         $this->assertSame('SQLite', (new SqliteDialect())->getName());
+    }
+
+    public function testCreatesOrReplacesAViewAtOnceOnEachEngine(): void
+    {
+        $sqlitePlatform = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true])->getDatabasePlatform();
+        $expectedStatements = [
+            [new MySqlDialect(), new MySQL80Platform(), ['CREATE OR REPLACE VIEW `item_view` AS SELECT 1']],
+            [new PostgreSqlDialect(), new PostgreSQLPlatform(), ['CREATE OR REPLACE VIEW "item_view" AS SELECT 1']],
+            [new SqlServerDialect(), new SQLServerPlatform(), ['CREATE OR ALTER VIEW [item_view] AS SELECT 1']],
+            // SQLite cannot replace a view, so it drops and creates it in a transaction
+            [new SqliteDialect(), $sqlitePlatform, ['BEGIN', 'DROP VIEW IF EXISTS "item_view"', 'CREATE VIEW "item_view" AS SELECT 1', 'COMMIT']],
+        ];
+
+        foreach ($expectedStatements as [$dialect, $platform, $expected]) {
+            $statements = [];
+            $connection = $this->createStub(Connection::class);
+            $connection->method('getDatabasePlatform')->willReturn($platform);
+            $connection->method('executeStatement')->willReturnCallback(function (string $sql) use (&$statements) {
+                $statements[] = $sql;
+
+                return 0;
+            });
+            $connection->method('beginTransaction')->willReturnCallback(function () use (&$statements) {
+                $statements[] = 'BEGIN';
+            });
+            $connection->method('commit')->willReturnCallback(function () use (&$statements) {
+                $statements[] = 'COMMIT';
+            });
+
+            $dialect->createOrReplaceView($connection, 'item_view', 'SELECT 1');
+            $this->assertSame($expected, $statements, $dialect->getName());
+        }
     }
 
     private function tokenize(SqlDialect $dialect, string $sql): array

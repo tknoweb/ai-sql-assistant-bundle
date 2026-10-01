@@ -23,7 +23,7 @@ The `@vendor/...` line must be plain text, not inside a code block.
 - **Conversation.** The model asks its clarification questions (`ask_user` tool), 10 at most per request, then runs its query (`run_query` tool) with an interpretation sentence stating exactly what is counted. The user checks that sentence, not the SQL, so a query without a title or with an interpretation shorter than 30 characters goes back to the model without being run.
 - **Turns.** A message is first saved as the pending turn of its conversation, then run by a request of its own that the page sends, which holds a lock on the turn until its end. The page shows each step of the turn as it comes (thinking, reading the tables, searching a referential, running a query...), and the user may leave it and come back to the answer. A turn stopped before its end, by a failure of the model API or a restart of the web server, shows as failed, its message offered again.
 - **Pages.** The history and the main column are two Turbo frames: opening a conversation, starting one, sending a message or the end of a turn only reload the main column, which then reloads the history; renaming or archiving a conversation only reloads the history, or the main column for the conversation being read. The results already shown are kept rather than run again. In the question and message fields, Enter sends and Shift+Enter goes to the line.
-- **Sources.** First the curated views the application describes, then every table of the database (the model reads their columns on demand, `describe_tables` tool), then the content of the JSON columns, flattened every night into a dedicated table (`search_document_fields` tool to find their paths).
+- **Sources.** First the curated views the application describes, then every table of the database (the model reads their columns on demand, `describe_tables` tool), then the content of the JSON columns, flattened every night into a dedicated table and read through a view (`search_document_fields` tool to find their paths).
 - **Public referentials.** When the application provides some, the model can search them for the exact spelling of a name (`search_public_referential` tool, up to 20 names in a single call, each one going through `ReferentialProviderInterface::search()`). They are the only data it reads: only put there what you accept to send to the AI provider.
 - **Formats.** The model picks the first display format from the request; the user then switches between text, table, chart and Excel without any new call.
 - **Numbers.** The model rounds what its query computes, to a whole number for a count, an amount or an average of them, to `max_decimals` decimals for a percentage, a rate or a duration. Whatever it wrote, every number of a result keeps `max_decimals` decimals at most (2 by default), without the trailing zeros of a decimal column ("18447981.000000" shows as "18447981").
@@ -128,17 +128,19 @@ class AssistantConversationExchange extends AbstractConversationExchange
 
 #[ORM\Entity]
 #[ORM\Table(name: 'assistant_json_value')]
-#[ORM\Index(columns: ['source_table', 'source_column', 'generic_path'])]
-#[ORM\Index(columns: ['source_table', 'source_id'])]
+#[ORM\Index(columns: ['json_path_id', 'source_id'])]
+#[ORM\Index(columns: ['source_id'])]
 class AssistantJsonValue extends AbstractJsonValue {}
 
 #[ORM\Entity]
 #[ORM\Table(name: 'assistant_json_path')]
-#[ORM\Index(columns: ['source_table', 'source_column'])]
+#[ORM\Index(columns: ['generic_path'])]
 class AssistantJsonPath extends AbstractJsonPath {}
 ```
 
 The repositories of the first two implement `ConversationRepositoryInterface` (`findForOwner()`, conversations not archived, the most recent first) and `ConversationExchangeRepositoryInterface` (`findBetween()`, for the export). Then generate the migration with `doctrine:migrations:diff`.
+
+A flattened value only holds the id of its path, each path being stored once in the path table, which keeps the table of the values small. Those ids change from one flattening to the next, so the model never reads that table: it queries a view joining each value to its path (`id`, `source_table`, `source_column`, `source_id`, `generic_path`, `path_id1` to `path_id3`, `value`, `number_value`), named by `json_value_view` (`<table of the values>_view` by default). The flattening creates the view, then replaces it on each run: run it once right after the migration. On MySQL and MariaDB, the table of the values can also be compressed, `#[ORM\Table(name: 'assistant_json_value', options: ['row_format' => 'COMPRESSED'])]`, which about halves it, the flattening hardly slower; its copies keep that format.
 
 The flat tables are filled as `<table>_new` copies, then swapped with the live ones (renamed at once on MySQL and MariaDB, the previous tables being kept as `<table>_old` for an instant, copied into the live tables in a single transaction elsewhere): hide those copies from the migrations with a schema filter on the default connection, for instance `schema_filter: ~^(?!assistant_json_(value|path)_(new|old)$)~`.
 
@@ -165,6 +167,7 @@ tknoweb_ai_sql_assistant:
         exchange: App\Entity\AssistantConversationExchange
         json_value: App\Entity\AssistantJsonValue
         json_path: App\Entity\AssistantJsonPath
+    json_value_view: assistant_json_value_view # view the model reads the flattened values through
     prompt:                                    # documents added to the base instructions of the bundle
         instructions: '%kernel.project_dir%/docs/assistant_instructions.md'   # context, language, examples
         dictionary: '%kernel.project_dir%/docs/assistant_dictionary.md'       # ambiguous notions and their default rules
@@ -267,7 +270,7 @@ A query is also refused when an engine could read it in another way than the bun
 - **Templates.** The Bootstrap 5 templates of the bundle (`templates/chat/`) are overridden in `templates/bundles/TknowebAiSqlAssistantBundle/chat/`. They receive `baseTemplate`, `routePrefix` and `csrfTokenId`. An override of `index.html.twig` or `show.html.twig` keeps the Turbo frames and the targets of the `ai-sql-assistant` controller they hold: the history frame `ai-sql-assistant-history`, the main column frame `ai-sql-assistant-main` (`data-turbo-action="advance"` and its two actions, on `turbo:frame-load` and `turbo:before-frame-render`) and, on a conversation, its `conversation` target with its `data-*` attributes, the turn frame `ai-sql-assistant-turn` and the `end` target at the end of the messages, where the conversation opens. On a wide screen the chat holds in the window, the history and the messages each scrolling on their own: the override keeps the classes `ai-sql-assistant` (the element of the controller), `ai-sql-assistant-columns` (the row of the two columns), `ai-sql-assistant-history` and `ai-sql-assistant-main` (the frames) and `ai-sql-assistant-conversation` (the `conversation` target, its card holding the messages in its `card-body`), and a page that puts something around the chat sets the height it leaves in the CSS variable `--ai-sql-assistant-height` (`100vh` by default). An override of `_history.html.twig` keeps the `data-turbo-frame` of its links and of the forms of the conversation being read, and one of `_event.html.twig` the `data-turbo-permanent` of the result frames.
 - **Texts.** Translation domain `TknowebAiSqlAssistant` (French and English provided). A `translations/TknowebAiSqlAssistant+intl-icu.<locale>.yaml` file of the application overrides the keys it needs, for instance `questionPlaceholder`.
 - **Public referentials.** A service implementing `ReferentialProviderInterface`: names of the referentials, description for the model, search. Declared in `referential_provider`.
-- **Form keys.** When the keys of a JSON column come from a form, a user can post any key to it: a service implementing `JsonKeyVocabularyInterface` (registered automatically) gives the allowed words and the labels, and only the paths made of these words enter the catalog sent to the model. Without a vocabulary, a key only has to look like a field name. The labels of a path are given by key segment, or by the whole generic path when a form builds its keys in loops from pieces that tell nothing on their own; they are kept per template version, and a field search returns them with the group of paths of their version, the beginning they share given once. The model can restrict a field search to a kind of document or a template version.
+- **Form keys.** When the keys of a JSON column come from a form, a user can post any key to it: a service implementing `JsonKeyVocabularyInterface` (registered automatically) gives the allowed words and the labels, and only the paths made of these words are catalogable, the only ones a field search gives to the model. Without a vocabulary, a key only has to look like a field name. The labels of a path are given by key segment, or by the whole generic path when a form builds its keys in loops from pieces that tell nothing on their own; they are kept per template version, and a field search returns them with the group of paths of their version, the beginning they share given once. The model can restrict a field search to a kind of document or a template version.
 
 ## Security
 

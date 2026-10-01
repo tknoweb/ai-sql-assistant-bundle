@@ -7,7 +7,7 @@ use Tknoweb\AiSqlAssistantBundle\Entity\AbstractJsonPath;
 
 #[ORM\Entity]
 #[ORM\Table(name: 'json_path')]
-#[ORM\Index(columns: ['source_table', 'source_column'])]
+#[ORM\Index(columns: ['generic_path'])]
 class JsonPath extends AbstractJsonPath
 {
 }

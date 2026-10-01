@@ -2,17 +2,20 @@
 
 namespace Tknoweb\AiSqlAssistantBundle\Manager;
 
+use Doctrine\DBAL\Schema\Table;
 use Doctrine\DBAL\Types\Type;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Mapping\ClassMetadata;
 use Doctrine\ORM\Tools\SchemaTool;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Tknoweb\AiSqlAssistantBundle\Entity\AbstractJsonValue;
 
 /**
  * Describes the database tables the assistant may query, from the Doctrine mapping, so that a new table or column becomes available without any change here: every mapped table but the
  * forbidden ones, and every column but the forbidden ones, as set in the "forbidden" configuration of the bundle. The read-only database user of the assistant can read the whole database, so
- * this list is what keeps them out: QueryManager refuses any query naming them. The conversations and their log are always forbidden, since they hold the requests of the other users.
+ * this list is what keeps them out: QueryManager refuses any query naming them. The conversations and their log are always forbidden, since they hold the requests of the other users, and
+ * so is the table of the flattened JSON values, which the model reads through its view.
  * The descriptions only hold names, types and codes, never a stored value, so they can be sent to the model.
  */
 class SchemaManager
@@ -34,6 +37,8 @@ class SchemaManager
         private readonly array $unflattenedJsonEntities,
         #[Autowire('%tknoweb_ai_sql_assistant.entities%')]
         private readonly array $entities,
+        #[Autowire('%tknoweb_ai_sql_assistant.json_value_view%')]
+        private readonly ?string $jsonValueView = null,
     ) {
     }
 
@@ -92,46 +97,51 @@ class SchemaManager
         }
 
         $tables = [];
-        foreach ((new SchemaTool($this->entityManager))->getSchemaFromMetadata($metadatas)->getTables() as $table) {
+        $schema = (new SchemaTool($this->entityManager))->getSchemaFromMetadata($metadatas);
+        foreach ($schema->getTables() as $table) {
             $tableName = $this->getUnquotedName($table->getName());
             if (in_array($tableName, $forbiddenNames, true)) {
                 continue;
             }
 
-            $references = [];
-            foreach ($table->getForeignKeys() as $foreignKey) {
-                foreach ($foreignKey->getLocalColumns() as $index => $localColumn) {
-                    $references[$this->getUnquotedName($localColumn)] = $this->getUnquotedName($foreignKey->getForeignTableName()).'.'.$this->getUnquotedName($foreignKey->getForeignColumns()[$index]);
-                }
-            }
-
-            $columns = [];
-            foreach ($table->getColumns() as $column) {
-                $columnName = $this->getUnquotedName($column->getName());
-                if (in_array($columnName, $forbiddenNames, true)) {
-                    continue;
-                }
-
-                $columns[$columnName] = array_filter([
-                    'type' => Type::getTypeRegistry()->lookupName($column->getType()),
-                    'nullable' => !$column->getNotnull(),
-                    'references' => $references[$columnName] ?? null,
-                    'codes' => $codes[$tableName][$columnName] ?? null,
-                ]);
-            }
-
             // A table without any entity of its own is the join table of a many-to-many association
             $tables[$tableName] = [
                 'description' => array_key_exists($tableName, $descriptions) ? $descriptions[$tableName] : 'Link table of a many-to-many association.',
-                'columns' => $columns,
+                'columns' => $this->getColumns($table, $codes[$tableName] ?? [], $forbiddenNames),
             ];
         }
+
+        // The flattened values are read through their view, which joins each value to its path, the table of the values itself being forbidden
+        $valueTableName = $this->getJsonValueTableName();
+        $sourceColumns = [
+            'value' => $this->getColumns($schema->getTable($valueTableName), [], $forbiddenNames),
+            'path' => $this->getColumns($schema->getTable($this->entityManager->getClassMetadata($this->entities['json_path'])->getTableName()), [], $forbiddenNames),
+        ];
+        $viewColumns = [];
+        foreach (AbstractJsonValue::VIEW_COLUMNS as $column => $source) {
+            if (isset($sourceColumns[$source][$column])) {
+                $viewColumns[$column] = $sourceColumns[$source][$column];
+            }
+        }
+        $tables[$this->getJsonValueViewName()] = ['description' => $descriptions[$valueTableName] ?? null, 'columns' => $viewColumns];
 
         ksort($tables);
 
         return $this->tables = $tables;
     }
 
+    /**
+     * View the model queries the flattened JSON values through, under the columns of AbstractJsonValue::VIEW_COLUMNS: the "json_value_view" configuration, or the table of the values
+     * followed by "_view".
+     */
+    public function getJsonValueViewName(): string
+    {
+        return $this->jsonValueView ?? $this->getJsonValueTableName().'_view';
+    }
+
+    /**
+     * Table of the flattened JSON values, which the model never reads, the ids of their paths changing from one rebuild to the next: it queries their view instead.
+     */
     public function getJsonValueTableName(): string
     {
         return $this->entityManager->getClassMetadata($this->entities['json_value'])->getTableName();
@@ -232,9 +242,42 @@ class SchemaManager
         ));
     }
 
+    /**
+     * Readable columns of a table, by name: their type, whether they are nullable, the table and column they reference, and the codes of the column given in $codes.
+     */
+    private function getColumns(Table $table, array $codes, array $forbiddenNames): array
+    {
+        $references = [];
+        foreach ($table->getForeignKeys() as $foreignKey) {
+            foreach ($foreignKey->getLocalColumns() as $index => $localColumn) {
+                $references[$this->getUnquotedName($localColumn)] = $this->getUnquotedName($foreignKey->getForeignTableName()).'.'.$this->getUnquotedName($foreignKey->getForeignColumns()[$index]);
+            }
+        }
+
+        $columns = [];
+        foreach ($table->getColumns() as $column) {
+            $columnName = $this->getUnquotedName($column->getName());
+            if (in_array($columnName, $forbiddenNames, true)) {
+                continue;
+            }
+
+            $columns[$columnName] = array_filter([
+                'type' => Type::getTypeRegistry()->lookupName($column->getType()),
+                'nullable' => !$column->getNotnull(),
+                'references' => $references[$columnName] ?? null,
+                'codes' => $codes[$columnName] ?? null,
+            ]);
+        }
+
+        return $columns;
+    }
+
+    /**
+     * The forbidden entities of the configuration, the conversations and their log, which hold the requests of the other users, and the flattened values, read through their view.
+     */
     private function isForbiddenEntity(ClassMetadata $metadata): bool
     {
-        foreach ([...$this->forbiddenEntities, $this->entities['conversation'], $this->entities['exchange']] as $forbiddenEntity) {
+        foreach ([...$this->forbiddenEntities, $this->entities['conversation'], $this->entities['exchange'], $this->entities['json_value']] as $forbiddenEntity) {
             if (is_a($metadata->name, $forbiddenEntity, true)) {
                 return true;
             }
