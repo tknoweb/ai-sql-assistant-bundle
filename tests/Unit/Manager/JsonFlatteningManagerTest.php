@@ -166,6 +166,28 @@ class JsonFlatteningManagerTest extends TestCase
         ), SORT_REGULAR)));
     }
 
+    public function testStoresARichTextAsPlainText(): void
+    {
+        $this->sourceRows['employee'] = [['id' => 7, 'content' => json_encode([
+            'notes' => "<p><strong>The school&#039;s r&eacute;sum&eacute;&nbsp;:</strong></p>\r\n<ul><li>R&amp;D</li><li class=\"x\">Rate &lt; 5&nbsp;%<br />follow-up</li></ul>",
+            'table' => '<table><tr><td>Lyon</td><td>12</td></tr><tr><td>Paris</td><td>8</td></tr></table>',
+            'figure' => '<p>12</p>',
+            'blank' => '<p>&nbsp;</p>',
+            'comparison' => 'x < 5 & y > 2',
+        ])]];
+
+        $counts = $this->createFlatteningManager([self::EMPLOYEE_PROFILE])->rebuild();
+
+        // A rich text left empty once cleaned is left out like any empty value, and a value holding neither a tag nor an entity is kept as it is
+        $this->assertSame(['values' => 4, 'paths' => 4, 'skippedValues' => 0, 'skippedRows' => 0], $counts);
+        $this->assertSame([
+            ["The school's résumé :\n- R&D\n- Rate < 5 %\nfollow-up", null],
+            ["Lyon 12\nParis 8", null],
+            ['12', '12'],
+            ['x < 5 & y > 2', null],
+        ], array_map(fn (array $row) => [$row['value'], $row['number_value']], $this->getInsertedRows(self::VALUE_TABLE)));
+    }
+
     public function testCatalogsOnlyTheVettedKeysOfAForm(): void
     {
         $this->sourceRows['document'] = [

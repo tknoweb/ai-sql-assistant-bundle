@@ -31,6 +31,10 @@ class JsonFlatteningManager
     private const INSERT_BATCH_MAX_BYTES = 4000000;
     private const PATH_ID_COUNT = 3;
     private const NUMBER_VALUE_PATTERN = '/^-?\d{1,18}([.,]\d{1,6})?$/';
+    // A rich text typed in an HTML editor holds a tag or an entity ("&nbsp;", "&#039;"...), whereas a plain value may hold a bare "<" or "&" ("< 5 %", "R&D")
+    private const HTML_PATTERN = '/<\/?[a-z][a-z0-9]*(?:\s[^>]*)?\/?>|&(?:[a-z][a-z0-9]*|#\d+|#x[0-9a-f]+);/i';
+    // The tags that start a new line of the text, the items of a list getting a dash of their own beforehand
+    private const HTML_LINE_TAG_PATTERN = '/<\/?(?:p|div|ul|ol|li|h[1-6]|blockquote|pre|table|tr)(?:\s[^>]*)?>/i';
 
     private const LOCK_NAME = 'tknoweb_ai_sql_assistant_json_flattening';
 
@@ -180,17 +184,47 @@ class JsonFlatteningManager
     }
 
     /**
-     * Leaves of a decoded JSON content, as [segments of their path, value], empty values left out since they hold nothing to count.
+     * Leaves of a decoded JSON content, as [segments of their path, value], a rich text as plain text, and empty values left out since they hold nothing to count.
      */
     private function getLeaves(array $content, array $segments = []): \Generator
     {
         foreach ($content as $key => $value) {
             if (is_array($value)) {
                 yield from $this->getLeaves($value, [...$segments, (string) $key]);
-            } elseif (null !== $value && '' !== $value) {
+
+                continue;
+            }
+
+            if (is_string($value)) {
+                $value = $this->getPlainText($value);
+            }
+
+            if (null !== $value && '' !== $value) {
                 yield [[...$segments, (string) $key], $value];
             }
         }
+    }
+
+    /**
+     * A rich text typed in an HTML editor as plain text, so that the queries of the model filter and export the text itself rather than its markup: each paragraph, line break and item of
+     * a list on its own line, an item starting with a dash, the tags dropped, the entities decoded, the non-breaking spaces and the runs of spaces turned into a single space. A value holding
+     * neither a tag nor an entity is kept as it is.
+     */
+    private function getPlainText(string $value): string
+    {
+        if (!preg_match(self::HTML_PATTERN, $value)) {
+            return $value;
+        }
+
+        $text = preg_replace(
+            ['/<(script|style)\b[^>]*>.*?<\/\1\s*>/is', '/<br\s*\/?>/i', '/<li(?:\s[^>]*)?>/i', self::HTML_LINE_TAG_PATTERN, '/<\/t[dh]\s*>/i'],
+            ['', "\n", "\n- ", "\n", ' '],
+            $value
+        );
+        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = str_replace(["\r\n", "\r", "\u{00A0}", "\u{202F}"], ["\n", "\n", ' ', ' '], $text);
+
+        return trim(preg_replace(['/[ \t]+/', '/ ?\n\s*/'], [' ', "\n"], $text));
     }
 
     private function addValue(
