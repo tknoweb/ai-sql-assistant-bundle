@@ -304,6 +304,71 @@ class QueryManagerTest extends TestCase
         }
     }
 
+    public function testListsTheDistinctValuesOfAColumnOnEachEngine(): void
+    {
+        $quotedNames = [
+            'mysql' => ['`name`', '`store`', '`status`', 'LIMIT 51'],
+            'mariadb' => ['`name`', '`store`', '`status`', 'LIMIT 51'],
+            'postgresql' => ['"name"', '"store"', '"status"', 'LIMIT 51'],
+            'sqlserver' => ['[name]', '[store]', '[status]', 'OFFSET 0 ROWS FETCH NEXT 51 ROWS ONLY'],
+            'sqlite' => ['"name"', '"store"', '"status"', 'LIMIT 51'],
+        ];
+
+        foreach ($quotedNames as $engine => [$column, $table, $whereColumn, $limit]) {
+            $statements = [];
+            $connection = $this->createStub(Connection::class);
+            $connection->method('getDatabasePlatform')->willReturn($this->createPlatform($engine));
+            $connection->method('fetchFirstColumn')->willReturnCallback(function (string $sql, array $parameters) use (&$statements): array {
+                $statements[] = [$sql, $parameters];
+
+                return ['Alpha', 7];
+            });
+
+            $values = (new QueryManager($connection, $this->createSchemaManager()))->fetchDistinctValues('store', 'name', ['status' => 'open'], ' 50% OFF ', 51);
+
+            $this->assertSame(['Alpha', '7'], $values, $engine);
+            [$sql, $parameters] = $statements[0];
+            $this->assertStringStartsWith(sprintf('SELECT DISTINCT %1$s FROM %2$s WHERE %1$s IS NOT NULL AND %1$s <> \'\' AND %3$s = :where_0 AND LOWER(%1$s) LIKE :text ESCAPE \'!\' ORDER BY %1$s', $column, $table, $whereColumn), $sql, $engine);
+            $this->assertStringEndsWith($limit, $sql, $engine);
+            // The text is bound, lowered, its LIKE wildcards escaped
+            $this->assertSame(['where_0' => 'open', 'text' => '%50!% off%'], $parameters, $engine);
+        }
+    }
+
+    public function testListsTheDistinctValuesInATransactionRolledBack(): void
+    {
+        $calls = [];
+        $connection = $this->createMock(Connection::class);
+        $connection->method('getDatabasePlatform')->willReturn(new MySQLPlatform());
+        $connection->method('executeStatement')->willReturnCallback(function (string $sql) use (&$calls) {
+            $calls[] = 'session';
+
+            return 0;
+        });
+        $connection->expects($this->once())->method('beginTransaction')->willReturnCallback(function () use (&$calls) {
+            $calls[] = 'begin';
+        });
+        $connection->expects($this->once())->method('rollBack')->willReturnCallback(function () use (&$calls) {
+            $calls[] = 'rollback';
+        });
+        $connection->expects($this->once())->method('fetchFirstColumn')->willReturnCallback(function () use (&$calls) {
+            $calls[] = 'query';
+
+            throw $this->createDriverException("XPATH syntax error: '~s3cr3t-value'", 1105, null);
+        });
+
+        try {
+            (new QueryManager($connection, $this->createSchemaManager()))->fetchDistinctValues('store', 'name', [], null, 10);
+            $this->fail('The listing should have failed.');
+        } catch (\InvalidArgumentException $exception) {
+            // Like a query of the model: read only session first, a transaction always rolled back, an error message that could quote a value reduced to its code
+            $this->assertStringNotContainsString('s3cr3t-value', $exception->getMessage());
+        }
+
+        $this->assertSame(['begin', 'query', 'rollback'], array_values(array_diff($calls, ['session'])));
+        $this->assertSame('session', $calls[0]);
+    }
+
     public function testLeavesATransactionOfTheApplicationAsItIs(): void
     {
         $connection = $this->createMock(Connection::class);

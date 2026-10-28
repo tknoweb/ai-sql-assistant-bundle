@@ -13,8 +13,9 @@ use Tknoweb\AiSqlAssistantBundle\Provider\ToolCall;
 /**
  * Conversation loop of the assistant, on the model API of the provider of each model (see the "providers" configuration of the bundle). The loop is written by hand rather than with a tool
  * runner, because the ask_user tool pauses the conversation until the user answers, which happens in another HTTP request.
- * The model never sees any data: the result of run_query is displayed to the user by the application, and only a SQL error message goes back to the model. The public referentials of the
- * application, when it offers some, are the only data it can read, the table descriptions and the catalog of the document fields holding names and labels only.
+ * The model never sees any data: the result of run_query is displayed to the user by the application, and only a SQL error message goes back to the model, plus the fact that a result is
+ * empty when the application allows it ("report_empty_results"). The public referentials and the listable values of the application, when it offers some, are the only data it can read, the
+ * table descriptions and the catalog of the document fields holding names and labels only.
  */
 class AssistantManager
 {
@@ -23,6 +24,7 @@ class AssistantManager
     public const TOOL_SEARCH_PUBLIC_REFERENTIAL = 'search_public_referential';
     public const TOOL_DESCRIBE_TABLES = 'describe_tables';
     public const TOOL_SEARCH_DOCUMENT_FIELDS = 'search_document_fields';
+    public const TOOL_LIST_VALUES = 'list_values';
 
     // Message of the user, or answer to a question of the model, only found in the timeline of a stored conversation: during a turn the caller already knows what the user typed
     public const EVENT_USER_MESSAGE = 'userMessage';
@@ -38,6 +40,7 @@ class AssistantManager
     public const STEP_DESCRIBING_TABLES = 'describingTables';
     public const STEP_SEARCHING_REFERENTIAL = 'searchingReferential';
     public const STEP_SEARCHING_DOCUMENT_FIELDS = 'searchingDocumentFields';
+    public const STEP_LISTING_VALUES = 'listingValues';
     public const STEP_RUNNING_QUERY = 'runningQuery';
 
     // Formats a query result can be shown in. The model picks the first one from the request, the user can then switch to any other one available for that result.
@@ -66,6 +69,7 @@ class AssistantManager
     private const MAX_REFERENTIAL_SEARCHES = 20;
 
     private const QUERY_SUCCESS_RESULT = 'The query ran successfully. Its result is displayed to the user, you cannot see it.';
+    private const EMPTY_QUERY_RESULT = 'The query ran successfully but returned no row, which is all you learn of its result. When an empty result is unexpected, check the exact values its filters compare (a name, a code, a spelling) with your tools, then run it again corrected; otherwise tell the user that nothing matches.';
     private const INTERRUPTED_TOOL_RESULT = 'This tool call was not run, the turn was interrupted before it.';
     private const QUESTION_LIMIT_TOOL_RESULT = 'The question limit of this request is reached, this question was not asked: apply the default rules of the dictionary to the notions left, state them in the interpretation, and run the query.';
     private const MISSING_DESCRIPTION_TOOL_RESULT = 'The query was not run: it needs a title, and an interpretation of at least one full sentence, in the language of the user, stating exactly what it counts or lists: period, scope and every rule applied. Call run_query again with them.';
@@ -80,6 +84,7 @@ class AssistantManager
         private readonly QueryManager $queryManager,
         private readonly SchemaManager $schemaManager,
         private readonly JsonCatalogManager $catalogManager,
+        private readonly ValueListManager $valueListManager,
         #[Autowire('%tknoweb_ai_sql_assistant.models%')]
         private readonly array $models,
         #[Autowire('%tknoweb_ai_sql_assistant.model_prices%')]
@@ -87,6 +92,8 @@ class AssistantManager
         #[Autowire('%tknoweb_ai_sql_assistant.default_model%')]
         private readonly string $defaultModelKey,
         private readonly ?ReferentialProviderInterface $referentialProvider = null,
+        #[Autowire('%tknoweb_ai_sql_assistant.report_empty_results%')]
+        private readonly bool $reportEmptyResults = false,
     ) {
     }
 
@@ -474,6 +481,7 @@ class AssistantManager
             self::TOOL_SEARCH_PUBLIC_REFERENTIAL => ['type' => self::STEP_SEARCHING_REFERENTIAL, 'texts' => array_values(array_map(fn (mixed $text) => $this->getDisplayText($text), (array) ($toolUse->input['texts'] ?? [])))],
             self::TOOL_DESCRIBE_TABLES => ['type' => self::STEP_DESCRIBING_TABLES],
             self::TOOL_SEARCH_DOCUMENT_FIELDS => ['type' => self::STEP_SEARCHING_DOCUMENT_FIELDS, 'text' => $this->getDisplayText($toolUse->input['text'] ?? '')],
+            self::TOOL_LIST_VALUES => ['type' => self::STEP_LISTING_VALUES],
             default => ['type' => self::STEP_THINKING],
         };
     }
@@ -490,6 +498,7 @@ class AssistantManager
                 : [$this->getToolResult($toolUse->id, 'No public referential is available.', true), null],
             self::TOOL_DESCRIBE_TABLES => $this->describeTables($toolUse->id, $toolUse->input),
             self::TOOL_SEARCH_DOCUMENT_FIELDS => $this->searchDocumentFields($toolUse->id, $toolUse->input),
+            self::TOOL_LIST_VALUES => $this->listValues($toolUse->id, $toolUse->input),
             default => [$this->getToolResult($toolUse->id, sprintf('Unknown tool "%s".', $toolUse->name), true), null],
         };
     }
@@ -509,7 +518,10 @@ class AssistantManager
             return [$this->getToolResult($toolUseId, 'The query failed: '.$event['error'], true), $event];
         }
 
-        return [$this->getToolResult($toolUseId, self::QUERY_SUCCESS_RESULT), $event];
+        // Whether the result is empty is the only thing the model may learn of it, and only when the application allows it: never the number of rows, nor any value
+        $isEmpty = $this->reportEmptyResults && [] === $event['result']['rows'];
+
+        return [$this->getToolResult($toolUseId, $isEmpty ? self::EMPTY_QUERY_RESULT : self::QUERY_SUCCESS_RESULT), $event];
     }
 
     /**
@@ -639,6 +651,23 @@ class AssistantManager
         return [$this->getToolResult($toolUseId, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)), null];
     }
 
+    private function listValues(string $toolUseId, array $input): array
+    {
+        if ([] === $this->valueListManager->getSources()) {
+            return [$this->getToolResult($toolUseId, 'No value can be listed.', true), null];
+        }
+
+        $text = is_string($input['text'] ?? null) && '' !== trim($input['text']) ? trim($input['text']) : null;
+
+        try {
+            $result = $this->valueListManager->listValues((string) ($input['source'] ?? ''), $text);
+        } catch (\InvalidArgumentException $exception) {
+            return [$this->getToolResult($toolUseId, $exception->getMessage(), true), null];
+        }
+
+        return [$this->getToolResult($toolUseId, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)), null];
+    }
+
     private function getToolResult(string $toolUseId, string $content, bool $isError = false): array
     {
         $toolResult = ['type' => 'tool_result', 'toolUseID' => $toolUseId, 'content' => $content];
@@ -687,6 +716,7 @@ class AssistantManager
     private function getToolDefinitions(): array
     {
         $jsonValueTable = $this->schemaManager->getJsonValueViewName();
+        $listableSources = $this->valueListManager->getSources();
 
         return [
             [
@@ -705,7 +735,8 @@ class AssistantManager
             ],
             [
                 'name' => self::TOOL_RUN_QUERY,
-                'description' => 'Run a single SELECT statement on the database, its curated views and its tables. The application displays its result to the user in the requested format, you never see it: the tool result only says whether the query ran, with the error message of the database when it failed.',
+                'description' => 'Run a single SELECT statement on the database, its curated views and its tables. The application displays its result to the user in the requested format, you never see it: the tool result only says whether the query ran, with the error message of the database when it failed'
+                    .($this->reportEmptyResults ? ', and whether it returned no row.' : '.'),
                 'strict' => true,
                 'inputSchema' => [
                     'type' => 'object',
@@ -785,6 +816,23 @@ class AssistantManager
                     'additionalProperties' => false,
                 ],
             ],
+            ...([] !== $listableSources ? [[
+                'name' => self::TOOL_LIST_VALUES,
+                'description' => sprintf(
+                    'Give the distinct values stored in one of the listed columns or document fields, sorted, %d at most and without any count: list them before filtering a query on a code or a name of these sources whose exact spelling you do not know, rather than guess it. Give a part of the value to look for when the list may be long.',
+                    ValueListManager::MAX_VALUES
+                ),
+                'strict' => true,
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'source' => ['type' => 'string', 'enum' => $listableSources, 'description' => 'A column, as "table.column", or the generic path of a document field of '.$jsonValueTable.'.'],
+                        'text' => ['anyOf' => [['type' => 'string'], ['type' => 'null']], 'description' => 'Part of the values to look for, the case ignored. Null for every value.'],
+                    ],
+                    'required' => ['source', 'text'],
+                    'additionalProperties' => false,
+                ],
+            ]] : []),
         ];
     }
 }

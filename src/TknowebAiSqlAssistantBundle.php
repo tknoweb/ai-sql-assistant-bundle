@@ -138,6 +138,15 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
                 ->end()
                 ->arrayNode('unflattened_json_entities')->info('Entities whose JSON columns are not flattened')->scalarPrototype()->end()->end()
                 ->scalarNode('referential_provider')->info('Service implementing ReferentialProviderInterface, when the model may search public referentials')->defaultNull()->end()
+                ->arrayNode('listable_values')
+                    ->info('Columns and JSON fields whose distinct values the model may list, to filter on their exact spelling: like the public referentials, these values are sent to the AI provider')
+                    ->addDefaultsIfNotSet()
+                    ->children()
+                        ->arrayNode('columns')->info('Text columns of readable tables, as "table.column"')->scalarPrototype()->end()->end()
+                        ->arrayNode('json_paths')->info('Generic paths of the flattened JSON values, as the field search gives them')->scalarPrototype()->end()->end()
+                    ->end()
+                ->end()
+                ->booleanNode('report_empty_results')->info('Tell the model when a query returns no row, so that it checks its filters: all it then learns of a result, which it never sees otherwise')->defaultFalse()->end()
                 ->arrayNode('chart')
                     ->addDefaultsIfNotSet()
                     ->children()
@@ -184,11 +193,14 @@ class TknowebAiSqlAssistantBundle extends AbstractBundle
         $parameters = $container->parameters();
         $parameters->set('tknoweb_ai_sql_assistant.models', $models);
         $parameters->set('tknoweb_ai_sql_assistant.model_prices', $modelPrices);
-        foreach (['default_model', 'access_attribute', 'route_name_prefix', 'csrf_token_id', 'base_template', 'entities', 'json_value_view', 'prompt', 'coded_columns', 'coded_values_translation_domain', 'column_label_translation_prefix', 'locale', 'max_decimals', 'unflattened_json_entities'] as $key) {
+        foreach (['default_model', 'access_attribute', 'route_name_prefix', 'csrf_token_id', 'base_template', 'entities', 'json_value_view', 'prompt', 'coded_columns', 'coded_values_translation_domain', 'column_label_translation_prefix', 'locale', 'max_decimals', 'unflattened_json_entities', 'report_empty_results'] as $key) {
             $parameters->set('tknoweb_ai_sql_assistant.'.$key, $config[$key]);
         }
         foreach (['entities', 'tables', 'fields', 'field_attributes'] as $key) {
             $parameters->set('tknoweb_ai_sql_assistant.forbidden.'.$key, $config['forbidden'][$key]);
+        }
+        foreach (['columns', 'json_paths'] as $key) {
+            $parameters->set('tknoweb_ai_sql_assistant.listable_values.'.$key, $config['listable_values'][$key]);
         }
         $parameters->set('tknoweb_ai_sql_assistant.chart.palette', $config['chart']['palette']);
         $parameters->set('tknoweb_ai_sql_assistant.chart.options', $config['chart']['options']);

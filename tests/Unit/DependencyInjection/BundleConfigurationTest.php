@@ -66,6 +66,19 @@ class BundleConfigurationTest extends TestCase
             'fields' => $container->getParameter('tknoweb_ai_sql_assistant.forbidden.fields'),
             'field_attributes' => $container->getParameter('tknoweb_ai_sql_assistant.forbidden.field_attributes'),
         ]);
+        // No value reaches the model unless the application opens some
+        $this->assertSame([], $container->getParameter('tknoweb_ai_sql_assistant.listable_values.columns'));
+        $this->assertSame([], $container->getParameter('tknoweb_ai_sql_assistant.listable_values.json_paths'));
+        $this->assertFalse($container->getParameter('tknoweb_ai_sql_assistant.report_empty_results'));
+    }
+
+    public function testKeepsTheListableValuesAndTheEmptyResultReport(): void
+    {
+        $container = $this->load(['listable_values' => ['columns' => ['product.category'], 'json_paths' => ['payload[data][status]']], 'report_empty_results' => true] + self::CONFIG);
+
+        $this->assertSame(['product.category'], $container->getParameter('tknoweb_ai_sql_assistant.listable_values.columns'));
+        $this->assertSame(['payload[data][status]'], $container->getParameter('tknoweb_ai_sql_assistant.listable_values.json_paths'));
+        $this->assertTrue($container->getParameter('tknoweb_ai_sql_assistant.report_empty_results'));
     }
 
     public function testDeclaresOneServicePerProvider(): void

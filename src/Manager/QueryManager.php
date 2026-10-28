@@ -17,6 +17,8 @@ use Tknoweb\AiSqlAssistantBundle\Dialect\SqlToken;
 class QueryManager
 {
     private const MAX_EXECUTION_TIME_MILLISECONDS = 10000;
+    // Escape character of the LIKE patterns, set explicitly since the engines differ in their default one
+    private const LIKE_ESCAPE_CHARACTER = '!';
 
     // Words after which a star is a column wildcard (SELECT *) rather than a multiplication, and words before which it can only be one (SELECT TOP 10 * FROM)
     private const STAR_WILDCARD_PREFIXES = ['select', 'distinct', 'distinctrow', 'all', 'high_priority', 'straight_join', 'sql_small_result', 'sql_big_result', 'sql_buffer_result', 'sql_no_cache', 'sql_calc_found_rows', 'percent', 'ties'];
@@ -70,20 +72,9 @@ class QueryManager
     {
         $sql = $this->getValidatedSql($sql);
         $dialect = $this->getDialect();
-        $dialect->prepareSession($this->queryConnection, self::MAX_EXECUTION_TIME_MILLISECONDS);
 
-        // The query runs in a transaction that is always rolled back, which undoes a write every other barrier would have missed, on an engine without any read only session above all
-        $ownTransaction = !$this->queryConnection->isTransactionActive();
-        if ($ownTransaction) {
-            $this->queryConnection->beginTransaction();
-        }
-
-        try {
-            try {
-                $result = $this->queryConnection->executeQuery($sql);
-            } catch (DriverException $exception) {
-                throw new \InvalidArgumentException($this->getSafeErrorMessage($dialect, $exception), previous: $exception);
-            }
+        [$rows, $truncated] = $this->runProtected(function () use ($sql, $maxRows): array {
+            $result = $this->queryConnection->executeQuery($sql);
 
             $rows = [];
             $truncated = false;
@@ -97,11 +88,9 @@ class QueryManager
             }
 
             $result->free();
-        } finally {
-            if ($ownTransaction) {
-                $this->rollBack();
-            }
-        }
+
+            return [$rows, $truncated];
+        });
 
         $columns = array_keys($rows[0] ?? []);
 
@@ -111,6 +100,35 @@ class QueryManager
             'truncated' => $truncated,
             'codedColumns' => $this->getCodedColumns($dialect->tokenize($sql), $columns),
         ];
+    }
+
+    /**
+     * Distinct values of a text column of a table or a view, sorted, neither null nor empty, at most $maxValues of them: the ones containing $text when it is given, the case ignored, and the
+     * rows whose $where columns hold the given values ([column => value]). The bundle writes this statement itself, with the names it was given, and binds the values; it runs with the
+     * protections of a query of the model.
+     */
+    public function fetchDistinctValues(string $table, string $column, array $where, ?string $text, int $maxValues): array
+    {
+        $platform = $this->queryConnection->getDatabasePlatform();
+        $quotedColumn = SqlDialect::quoteName($platform, $column);
+
+        $conditions = [$quotedColumn.' IS NOT NULL', $quotedColumn." <> ''"];
+        $parameters = [];
+        foreach (array_keys($where) as $index => $whereColumn) {
+            $conditions[] = sprintf('%s = :where_%d', SqlDialect::quoteName($platform, $whereColumn), $index);
+            $parameters['where_'.$index] = $where[$whereColumn];
+        }
+        if (null !== $text && '' !== trim($text)) {
+            $conditions[] = sprintf("LOWER(%s) LIKE :text ESCAPE '%s'", $quotedColumn, self::LIKE_ESCAPE_CHARACTER);
+            $parameters['text'] = '%'.$platform->escapeStringForLike(mb_strtolower(trim($text)), self::LIKE_ESCAPE_CHARACTER).'%';
+        }
+
+        $sql = $platform->modifyLimitQuery(
+            sprintf('SELECT DISTINCT %1$s FROM %2$s WHERE %3$s ORDER BY %1$s', $quotedColumn, SqlDialect::quoteName($platform, $table), implode(' AND ', $conditions)),
+            $maxValues
+        );
+
+        return array_map('strval', $this->runProtected(fn () => $this->queryConnection->fetchFirstColumn($sql, $parameters)));
     }
 
     /**
@@ -476,6 +494,31 @@ class QueryManager
         }
 
         return $dialect->getErrorLabel($exception).'. Its message is hidden, since it may quote a stored value.';
+    }
+
+    /**
+     * Run $read on the query connection in a read only session with a time limit, inside a transaction that is always rolled back, which undoes a write every other barrier would have missed,
+     * on an engine without any read only session above all. An error of the database only keeps its message when that message cannot quote a stored value.
+     */
+    private function runProtected(\Closure $read): mixed
+    {
+        $dialect = $this->getDialect();
+        $dialect->prepareSession($this->queryConnection, self::MAX_EXECUTION_TIME_MILLISECONDS);
+
+        $ownTransaction = !$this->queryConnection->isTransactionActive();
+        if ($ownTransaction) {
+            $this->queryConnection->beginTransaction();
+        }
+
+        try {
+            return $read();
+        } catch (DriverException $exception) {
+            throw new \InvalidArgumentException($this->getSafeErrorMessage($dialect, $exception), previous: $exception);
+        } finally {
+            if ($ownTransaction) {
+                $this->rollBack();
+            }
+        }
     }
 
     private function rollBack(): void

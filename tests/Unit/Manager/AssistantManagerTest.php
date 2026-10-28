@@ -7,6 +7,7 @@ use Doctrine\DBAL\Exception\ConnectionLost;
 use Tknoweb\AiSqlAssistantBundle\Manager\AssistantManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\QueryManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\SchemaManager;
+use Tknoweb\AiSqlAssistantBundle\Manager\ValueListManager;
 use Tknoweb\AiSqlAssistantBundle\Provider\ModelMessage;
 use Tknoweb\AiSqlAssistantBundle\Provider\ModelProviderException;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\PublicReferentialProvider;
@@ -193,6 +194,93 @@ class AssistantManagerTest extends AssistantManagerTestCase
         $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_2', 'content' => 'The searched text must hold at least one word of two characters.', 'isError' => true]], $history[4]['content']);
         // The kind of document and the template version restrict the search when given
         $this->assertSame([['price', null, null], ['x', null, null], ['price', 'form', 'v2']], $searches);
+    }
+
+    public function testListsTheValuesOfAListableSource(): void
+    {
+        $listings = [];
+        $this->valueListManager = $this->createStub(ValueListManager::class);
+        $this->valueListManager->method('getSources')->willReturn(['store.name', 'payload[data][status]']);
+        $this->valueListManager->method('listValues')->willReturnCallback(function (string $source, ?string $text) use (&$listings): array {
+            $listings[] = [$source, $text];
+
+            return 'store.name' === $source
+                ? ['values' => ['Alpha store'], 'moreValues' => false] : throw new \InvalidArgumentException('"price" is not a listable column or field: give one of the sources of the tool.');
+        });
+        $this->provider->queue(
+            ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_LIST_VALUES, ['source' => 'store.name', 'text' => ' alp ']),
+            ScriptedModelProvider::toolCall('toolu_2', AssistantManager::TOOL_LIST_VALUES, ['source' => 'price', 'text' => null]),
+            ScriptedModelProvider::text('Done'),
+        );
+
+        $steps = [];
+        $turn = $this->createAssistantManager()->continueConversation([], self::MODEL_KEY, 'Alpha?', function (array $step) use (&$steps): void {
+            $steps[] = $step;
+        });
+
+        $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_1', 'content' => '{"values":["Alpha store"],"moreValues":false}']], $turn['history'][2]['content']);
+        $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_2', 'content' => '"price" is not a listable column or field: give one of the sources of the tool.', 'isError' => true]], $turn['history'][4]['content']);
+        $this->assertSame([['store.name', 'alp'], ['price', null]], $listings);
+        $this->assertContains(['type' => AssistantManager::STEP_LISTING_VALUES], $steps);
+        // The values only go to the model, no event shows them
+        $this->assertSame([AssistantManager::EVENT_TEXT], $this->getEventTypes($turn['events']));
+    }
+
+    public function testOffersTheValueToolOnlyWithListableSources(): void
+    {
+        $this->provider->queue(ScriptedModelProvider::toolCall('toolu_1', AssistantManager::TOOL_LIST_VALUES, ['source' => 'store.name', 'text' => null]), ScriptedModelProvider::text('Sorry'));
+
+        $history = $this->createAssistantManager()->continueConversation([], self::MODEL_KEY, 'Alpha?')['history'];
+
+        $this->assertNotContains(AssistantManager::TOOL_LIST_VALUES, array_column($this->provider->calls[0]['tools'], 'name'));
+        $this->assertSame([['type' => 'tool_result', 'toolUseID' => 'toolu_1', 'content' => 'No value can be listed.', 'isError' => true]], $history[2]['content']);
+
+        $this->valueListManager = $this->createStub(ValueListManager::class);
+        $this->valueListManager->method('getSources')->willReturn(['store.name', 'payload[data][status]']);
+        $this->provider->queue(ScriptedModelProvider::text('Hello'));
+        $this->createAssistantManager(new PublicReferentialProvider())->continueConversation([], self::MODEL_KEY, 'Hi');
+
+        // Last of the tools, so that the others keep their place, strict like them, its sources listed
+        $tools = $this->provider->calls[array_key_last($this->provider->calls)]['tools'];
+        $tool = end($tools);
+        $this->assertSame(AssistantManager::TOOL_LIST_VALUES, $tool['name']);
+        $this->assertTrue($tool['strict']);
+        $this->assertSame(['store.name', 'payload[data][status]'], $tool['inputSchema']['properties']['source']['enum']);
+        $this->assertSame(array_keys($tool['inputSchema']['properties']), $tool['inputSchema']['required']);
+        $this->assertFalse($tool['inputSchema']['additionalProperties']);
+        $this->assertStringContainsString('100 at most and without any count', $tool['description']);
+    }
+
+    public function testTellsTheModelThatAResultIsEmptyOnlyWhenAllowed(): void
+    {
+        $this->queryManager->method('execute')->willReturnCallback(fn (string $sql): array => str_contains($sql, 'closed')
+            ? ['columns' => [], 'rows' => [], 'truncated' => false]
+            : ['columns' => ['name'], 'rows' => [['name' => self::STORED_VALUE]], 'truncated' => false]);
+
+        foreach ([true, false] as $reportEmptyResults) {
+            $this->provider->queue(
+                ScriptedModelProvider::query('toolu_1', "SELECT name FROM store WHERE status = 'closed'"),
+                ScriptedModelProvider::query('toolu_2', 'SELECT name FROM store'),
+                ScriptedModelProvider::text('Done'),
+            );
+            $firstCall = count($this->provider->calls);
+
+            $history = $this->createAssistantManager(reportEmptyResults: $reportEmptyResults)->continueConversation([], self::MODEL_KEY, 'Stores?')['history'];
+
+            // The model learns that the first result is empty, never how many rows the second one holds nor any of its values
+            $emptyResult = $history[2]['content'][0]['content'];
+            if ($reportEmptyResults) {
+                $this->assertStringStartsWith('The query ran successfully but returned no row', $emptyResult);
+                $this->assertStringContainsString('whether it returned no row', $this->provider->calls[$firstCall]['tools'][1]['description']);
+            } else {
+                $this->assertSame(self::QUERY_SUCCESS_RESULT, $emptyResult);
+                $this->assertStringNotContainsString('no row', $this->provider->calls[$firstCall]['tools'][1]['description']);
+            }
+            $this->assertArrayNotHasKey('isError', $history[2]['content'][0]);
+            $this->assertSame(self::QUERY_SUCCESS_RESULT, $history[4]['content'][0]['content']);
+        }
+
+        $this->assertStringNotContainsString(self::STORED_VALUE, json_encode($this->provider->calls, JSON_THROW_ON_ERROR));
     }
 
     public function testReportsAnUnknownToolToTheModel(): void

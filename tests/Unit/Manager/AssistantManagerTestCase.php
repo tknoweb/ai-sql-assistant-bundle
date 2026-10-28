@@ -10,6 +10,7 @@ use Tknoweb\AiSqlAssistantBundle\Manager\JsonCatalogManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\PromptManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\QueryManager;
 use Tknoweb\AiSqlAssistantBundle\Manager\SchemaManager;
+use Tknoweb\AiSqlAssistantBundle\Manager\ValueListManager;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\ScriptedModelProvider;
 use Tknoweb\AiSqlAssistantBundle\Tests\Fixtures\TestKernel;
 
@@ -32,6 +33,8 @@ abstract class AssistantManagerTestCase extends TestCase
     protected QueryManager $queryManager;
     protected SchemaManager $schemaManager;
     protected JsonCatalogManager $catalogManager;
+    // No listable value unless a test sets some
+    protected ValueListManager $valueListManager;
 
     protected function setUp(): void
     {
@@ -40,6 +43,8 @@ abstract class AssistantManagerTestCase extends TestCase
         $this->schemaManager = $this->createStub(SchemaManager::class);
         $this->schemaManager->method('getJsonValueViewName')->willReturn('json_value');
         $this->catalogManager = $this->createStub(JsonCatalogManager::class);
+        $this->valueListManager = $this->createStub(ValueListManager::class);
+        $this->valueListManager->method('getSources')->willReturn([]);
     }
 
     /**
@@ -51,6 +56,7 @@ abstract class AssistantManagerTestCase extends TestCase
         array $models = [],
         string $defaultModelKey = self::MODEL_KEY,
         array $prices = self::PRICES,
+        bool $reportEmptyResults = false,
     ): AssistantManager {
         $promptManager = $this->createStub(PromptManager::class);
         $promptManager->method('getSystemTexts')->willReturn(self::SYSTEM_TEXTS);
@@ -61,10 +67,12 @@ abstract class AssistantManagerTestCase extends TestCase
             $this->queryManager,
             $this->schemaManager,
             $this->catalogManager,
+            $this->valueListManager,
             $models + [self::MODEL_KEY => ['provider' => 'scripted', 'id' => self::MODEL_ID]],
             $prices,
             $defaultModelKey,
             $referentialProvider,
+            $reportEmptyResults,
         );
     }
 

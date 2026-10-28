@@ -28,6 +28,7 @@ step:
   describingTables: Reading the structure of the tables…
   searchingReferential: "Searching the referentials for “{texts}”…"
   searchingDocumentFields: "Searching the document fields for “{text}”…"
+  listingValues: Checking the exact values of its filters…
   runningQuery: "Running the query “{title}”…"
 refusal: "The assistant declined this request. Rephrase it, or contact the administrator if the problem persists."
 interrupted: "The assistant stopped before the end. Send your request again, more precisely if possible."
