@@ -550,7 +550,7 @@ class AssistantManager
         }
 
         $event['answer'] = $this->getAnswer($input['answer_template'] ?? null, $event['result']);
-        $event['chart'] = $this->getChart($input['chart'] ?? null, $event['result']['columns']);
+        $event['chart'] = $this->getChart($input['chart'] ?? null, $event['result']);
         $event['output'] = $this->getOutput($input['output'] ?? null, $event['answer'], $event['chart']);
 
         return $event;
@@ -574,9 +574,10 @@ class AssistantManager
     }
 
     /**
-     * Chart described by the model, kept only when its columns are actually part of the result, so that the display can rely on it.
+     * Chart described by the model, kept only when its columns are actually part of the result and each row has its own label, so that the display can rely on it: the labels a breakdown by
+     * two categories repeats would draw bars nobody can tell apart. The model is never told that its chart was dropped, which would reveal something of the result.
      */
-    private function getChart(mixed $chart, array $columns): ?array
+    private function getChart(mixed $chart, array $result): ?array
     {
         if (!is_array($chart) || !in_array($chart['type'] ?? null, self::CHART_TYPES, true)) {
             return null;
@@ -584,7 +585,12 @@ class AssistantManager
 
         $labelColumn = (string) ($chart['label_column'] ?? '');
         $valueColumns = array_values(array_unique(array_map('strval', (array) ($chart['value_columns'] ?? []))));
-        if (!in_array($labelColumn, $columns, true) || [] === $valueColumns || [] !== array_diff($valueColumns, $columns)) {
+        if (!in_array($labelColumn, $result['columns'], true) || [] === $valueColumns || [] !== array_diff($valueColumns, $result['columns'])) {
+            return null;
+        }
+
+        $labels = array_map(fn (array $row) => (string) $row[$labelColumn], $result['rows']);
+        if (count($labels) !== count(array_unique($labels))) {
             return null;
         }
 
@@ -755,7 +761,7 @@ class AssistantManager
                                     'type' => 'object',
                                     'properties' => [
                                         'type' => ['type' => 'string', 'enum' => self::CHART_TYPES],
-                                        'label_column' => ['type' => 'string', 'description' => 'Column of the result giving the labels, e.g. the year.'],
+                                        'label_column' => ['type' => 'string', 'description' => 'Column of the result giving the label of each row, e.g. the year: a category, never a figure, different on each row.'],
                                         'value_columns' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'Numeric columns of the result to draw, a single one for a pie chart.'],
                                     ],
                                     'required' => ['type', 'label_column', 'value_columns'],

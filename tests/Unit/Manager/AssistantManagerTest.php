@@ -711,6 +711,21 @@ class AssistantManagerTest extends AssistantManagerTestCase
         }
     }
 
+    public function testDropsAChartWhoseLabelsRepeat(): void
+    {
+        $chart = ['type' => 'bar', 'label_column' => 'status', 'value_columns' => ['stores']];
+        $cases = [
+            'one row per label' => [[['status' => 'open', 'stores' => 3], ['status' => 'closed', 'stores' => 1]], ['type' => 'bar', 'labelColumn' => 'status', 'valueColumns' => ['stores']]],
+            'breakdown by two categories' => [[['status' => 'open', 'size' => 'small', 'stores' => 3], ['status' => 'open', 'size' => 'large', 'stores' => 1]], null],
+        ];
+
+        foreach ($cases as $case => [$rows, $expectedChart]) {
+            $event = $this->runQueryEvent(['output' => 'chart', 'chart' => $chart], $rows);
+            $this->assertSame($expectedChart, $event['chart'], $case);
+            $this->assertSame(null === $expectedChart ? AssistantManager::OUTPUT_TABLE : AssistantManager::OUTPUT_CHART, $event['output'], $case);
+        }
+    }
+
     public function testShowsTheFormatTheModelPickedWhenTheResultAllowsIt(): void
     {
         $chart = ['type' => 'bar', 'label_column' => 'year', 'value_columns' => ['n']];
